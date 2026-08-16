@@ -9,12 +9,9 @@ Kronox's Edition is an analytics- and strategy-development-focused fork of **Ult
 * **Strategy Version Identity** - Each run records a fingerprint of the exact `.strat` contents used.
 * **Strategy Reliability Rules** - Strategy-specific clone retry/defer policies and late-wave skip controls.
 * **Abstract XP Tower Slots** - Record one hotbar slot as `Abstract` so the same farm strategy can place and operate any tower equipped there, with protected loadouts and extended placement retries for expensive towers.
-* **Warm Black-Red + Crimson Interface** - Kronox branding, a dedicated Analytics view, restored Credits, and the K icon.
-* **Fork-Safe Updates** - Executable self-updates check only the Kronox edition repository, preventing upstream builds from overwriting fork features. Until a release is published there, the check quietly does nothing.
+* **Fork-Safe Updates** - Executable self-updates check only the Kronox edition repository, preventing upstream builds from overwriting fork features. Until a release is published there, the check quietly does nothing. I will also update the lastest feature from original one.
 
 ## Original project
-
-Started on March 30, 2026. My friend bet me that I wouldn't make a macro for TDS, but I did, lol.
 
 Ultimate Macro is an advanced, fully-featured automation tool for Roblox Tower Defense Simulator. 
 
@@ -61,11 +58,11 @@ Enable **Abstract XP tower** on the Record tab and choose a hotbar slot before r
 
 Abstract strategies intentionally skip Auto Equip to preserve the player's chosen XP tower. Equip the other required towers manually, put the tower you want to level in the declared slot, and then start the strategy. Abstract placements retry for up to 15 minutes so expensive towers have time to become affordable.
 
-## Links & Support
+## Links & Support for Original Creator
 
 * **Kronox Edition Repository:** [kronoxhellstorm/tds-macro-kronox](https://github.com/kronoxhellstorm/tds-macro-kronox)
 * **Discord Server:** [Join for help, strategies, and updates!](https://discord.gg/DQnc2JDJtr)
 * **YouTube Channel:** [@darksenn](https://www.youtube.com/@darksenn)
 * **Original Repository:** [DarksenDev/tds-macro](https://github.com/DarksenDev/tds-macro)
 
-*If you truly enjoy the macro and want to support my free work, you can donate [here](https://www.donationalerts.com/r/darksen1). Any support is massively appreciated! :sparkling_heart:*
+*If you truly enjoy the macro and want to support my free work, you can donate to original creator [here](https://www.donationalerts.com/r/darksen1). Any support is massively appreciated! :sparkling_heart:*
