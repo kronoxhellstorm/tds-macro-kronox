@@ -1,0 +1,23 @@
+# User-specific runtime state (stored outside the source tree in normal use)
+Options/
+Recordings/
+state.ini
+overall_stats.ini
+run_ledger.csv
+
+# Local diagnostics and generated packages
+*.log
+*.tmp
+*.bak
+*.old
+/*.exe
+/*.zip
+/build/
+/dist/
+
+# Editor and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,97 @@
+[Settings]
+map=Dead Ahead
+difficulty=Easy
+requiredTowers=G Soldier, enforcer,
+modifiers=Speedy, Exploding
+autoChain=OFF
+autoCaravan=OFF
+autoDropTheBeat=OFF
+autoSkip=ON
+abilitySpam=OFF
+moveEnabled=0
+moveDirection=W
+moveDuration=5000
+
+[DO NOT EDIT]
+width=1920
+height=1009
+
+[Steps]
+SpawnTower(865, 34, 1, GSoldier1)
+SpawnTower(980, 34, 1, GSoldier2)
+SpawnTower(985, 80, 1, GSoldier3)
+SpawnTower(862, 78, 1, GSoldier4)
+UpgradeTower(GSoldier2)
+UpgradeTower(GSoldier2)
+UpgradeTower(GSoldier1)
+UpgradeTower(GSoldier1)
+UpgradeTower(GSoldier4)
+UpgradeTower(GSoldier4)
+UpgradeTower(GSoldier3)
+UpgradeTower(GSoldier3)
+SpawnTower(1028, 49, 1, GSoldier5)
+UpgradeTower(GSoldier5)
+UpgradeTower(GSoldier5)
+SpawnTower(813, 78, 1, GSoldier6)
+UpgradeTower(GSoldier6)
+UpgradeTower(GSoldier6)
+SpawnTower(868, 121, 1, GSoldier7)
+UpgradeTower(GSoldier7)
+UpgradeTower(GSoldier7)
+SpawnTower(986, 122, 1, GSoldier8)
+UpgradeTower(GSoldier8)
+UpgradeTower(GSoldier8)
+SpawnTower(1031, 92, 1, GSoldier9)
+UpgradeTower(GSoldier9)
+UpgradeTower(GSoldier9)
+SpawnTower(819, 120, 1, GSoldier10)
+UpgradeTower(GSoldier10)
+UpgradeTower(GSoldier10)
+SpawnTower(1072, 67, 1, GSoldier11)
+UpgradeTower(GSoldier11)
+UpgradeTower(GSoldier11)
+SpawnTower(772, 105, 1, GSoldier12)
+UpgradeTower(GSoldier12)
+UpgradeTower(GSoldier12)
+SpawnTower(867, 165, 1, GSoldier13)
+UpgradeTower(GSoldier13)
+UpgradeTower(GSoldier13)
+SpawnTower(985, 168, 1, GSoldier14)
+UpgradeTower(GSoldier14)
+UpgradeTower(GSoldier14)
+SpawnTower(1079, 108, 1, GSoldier15)
+UpgradeTower(GSoldier15)
+UpgradeTower(GSoldier15)
+SpawnTower(1036, 134, 1, GSoldier16)
+UpgradeTower(GSoldier16)
+UpgradeTower(GSoldier16)
+SpawnTower(817, 163, 1, GSoldier17)
+UpgradeTower(GSoldier17)
+UpgradeTower(GSoldier17)
+SpawnTower(770, 148, 1, GSoldier18)
+UpgradeTower(GSoldier18)
+UpgradeTower(GSoldier18)
+SpawnTower(1035, 176, 1, GSoldier19)
+UpgradeTower(GSoldier19)
+UpgradeTower(GSoldier19)
+SpawnTower(842, 204, 2, enforcer1)
+UpgradeTower(GSoldier1)
+UpgradeTower(GSoldier2)
+UpgradeTower(GSoldier3)
+UpgradeTower(GSoldier5)
+UpgradeTower(GSoldier4)
+UpgradeTower(GSoldier6)
+UpgradeTower(GSoldier11)
+UpgradeTower(GSoldier9)
+UpgradeTower(GSoldier15)
+UpgradeTower(GSoldier7)
+UpgradeTower(GSoldier10)
+UpgradeTower(GSoldier12)
+UpgradeTower(GSoldier18)
+UpgradeTower(GSoldier17)
+UpgradeTower(GSoldier13)
+UpgradeTower(GSoldier20)
+UpgradeTower(GSoldier14)
+UpgradeTower(GSoldier8)
+UpgradeTower(GSoldier16)
+UpgradeTower(GSoldier19)

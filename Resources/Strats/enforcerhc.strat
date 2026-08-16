@@ -1,0 +1,93 @@
+[Settings]
+map=Wretched Front
+difficulty=Hardcore
+requiredTowers=Farm, Engineer, enforcer
+modifiers=
+autoChain=OFF
+autoCaravan=OFF
+autoDropTheBeat=OFF
+autoSkip=ON
+abilitySpam=OFF
+moveEnabled=0
+moveDirection=W
+moveDuration=5000
+
+[DO NOT EDIT]
+width=1920
+height=1009
+
+[Steps]
+SpawnTower(369, 411, 1, Farm1)
+UpgradeTower(Farm1)
+UpgradeTower(Farm1)
+SpawnTower(349, 467, 1, Farm2)
+UpgradeTower(Farm2)
+UpgradeTower(Farm2)
+SpawnTower(372, 514, 1, Farm3)
+UpgradeTower(Farm3)
+UpgradeTower(Farm3)
+SpawnTower(991, 911, 2, Engineer1)
+UpgradeTower(Engineer1)
+SpawnTower(377, 578, 1, Farm4)
+UpgradeTower(Farm4)
+UpgradeTower(Farm4)
+SpawnTower(384, 642, 1, Farm5)
+UpgradeTower(Farm5)
+UpgradeTower(Farm5)
+SpawnTower(446, 627, 1, Farm6)
+UpgradeTower(Farm6)
+UpgradeTower(Farm6)
+UpgradeTower(Engineer1)
+SpawnTower(432, 564, 1, Farm7)
+UpgradeTower(Farm7)
+UpgradeTower(Farm7)
+SpawnTower(430, 504, 1, Farm8)
+UpgradeTower(Farm8)
+UpgradeTower(Farm8)
+SpawnTower(418, 450, 1, Farm9)
+UpgradeTower(Farm9)
+UpgradeTower(Farm9)
+SpawnTower(430, 393, 1, Farm10)
+UpgradeTower(Farm10)
+UpgradeTower(Farm10)
+UpgradeTower(Engineer1)
+UpgradeTower(Farm6)
+UpgradeTower(Farm7)
+UpgradeTower(Farm8)
+UpgradeTower(Farm9)
+UpgradeTower(Farm10)
+UpgradeTower(Farm1)
+UpgradeTower(Farm2)
+SpawnTower(919, 913, 2, Engineer2)
+UpgradeTower(Engineer2)
+UpgradeTower(Engineer2)
+UpgradeTower(Engineer2)
+SpawnTower(1053, 913, 2, Engineer3)
+UpgradeTower(Engineer3)
+UpgradeTower(Engineer3)
+UpgradeTower(Engineer3)
+UpgradeTower(Farm3)
+UpgradeTower(Farm5)
+UpgradeTower(Farm4)
+UpgradeTower(Engineer1)
+SpawnTower(947, 859, 2, Engineer4)
+UpgradeTower(Engineer4)
+UpgradeTower(Engineer4)
+UpgradeTower(Engineer4)
+SpawnTower(1003, 851, 2, Engineer5)
+UpgradeTower(Engineer5)
+UpgradeTower(Engineer5)
+UpgradeTower(Engineer5)
+UpgradeTower(Engineer5)
+SpawnTower(1058, 853, 2, Engineer6)
+UpgradeTower(Engineer6)
+UpgradeTower(Engineer6)
+UpgradeTower(Engineer6)
+UpgradeTower(Engineer6)
+UpgradeTower(Engineer3)
+UpgradeTower(Engineer2)
+UpgradeTower(Engineer4)
+SpawnTower(998, 757, 3, enforcer1)
+UpgradeTower(enforcer1, false, 1, 2, 3)
+UpgradeTower(enforcer1, false, 1, 2, 3)
+UpgradeTower(enforcer1, false, 1, 2, 3)
