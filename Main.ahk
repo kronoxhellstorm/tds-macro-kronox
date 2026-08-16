@@ -72,7 +72,7 @@ global UITheme := Map(
 ; Roster checked against the TDS Wiki on 2026-08-17. Custom typing stays enabled
 ; so a newly released tower or a macro-specific alias never becomes a blocker.
 global SupportedTowerNames := [
-    "Accelerator", "Ace Pilot", "Archer", "Assassin", "Biologist", "Boomerang", "Brawler",
+    "Abstract", "Accelerator", "Ace Pilot", "Archer", "Assassin", "Biologist", "Boomerang", "Brawler",
     "Commander", "Commando", "Cowboy", "Crook Boss", "Cryomancer", "Demoman", "DJ", "DJ Booth",
     "Electroshocker", "Elementalist", "Elf Camp", "Enforcer", "Engineer", "Executioner", "Farm",
     "Firework Technician", "Freezer", "Frost Blaster", "Gatling Gun", "Gladiator", "Hacker",
@@ -1589,6 +1589,7 @@ global StatsCtrls := [Stats_Kicker, Stats_TITLE, Stats_Subtitle, Stats_ScopeLabe
 
 global EditorStrategyPath := ""
 global EditorRecordedTowerText := ""
+global EditorSyncingAbstract := false
 global EditorHotbarDragSource := 0, EditorHotbarDragTarget := 0
 global EditorHotbarDragStartX := 0, EditorHotbarDragStartY := 0, EditorHotbarDragMoved := false
 global EditorSupportedMaps := [
@@ -1675,7 +1676,7 @@ MainGui.SetFont("s8 w650 cB79AA0", "Segoe UI")
 global Editor_OriginalLabel := MainGui.Add("Text", "x30 y318 w66 h20 Hidden 0x200", "ORIGINAL")
 global Editor_EquippedLabel := MainGui.Add("Text", "x30 y347 w66 h20 Hidden 0x200", "EQUIPPED")
 MainGui.SetFont("s8 w400 c987D83", "Segoe UI")
-global Editor_HotbarHint := MainGui.Add("Text", "x30 y374 w700 h16 Hidden", "Drag an Original card onto another slot to swap Equipped positions; dropdowns can replace individual towers.")
+global Editor_HotbarHint := MainGui.Add("Text", "x30 y374 w700 h16 Hidden", "Drag Original cards to rearrange both rows; edit an Equipped dropdown to replace only that tower.")
 
 MainGui.SetFont("s9 w650 cEF2B2D", "Segoe UI")
 global Editor_ModifiersTitle := MainGui.Add("Text", "x30 y393 w180 h20 Hidden", "MODIFIERS")
@@ -1734,6 +1735,7 @@ for ctrl in EditorOriginalTowerCtrls
     EditorCtrls.Push(ctrl)
 for ctrl in EditorTowerCtrls
     EditorCtrls.Push(ctrl), ctrl.OnEvent("Change", EditorHotbarChanged)
+Editor_AbstractCtrl.OnEvent("Change", EditorAbstractSlotChanged)
 for modifierName, ctrl in EditorModifierCtrls
     EditorCtrls.Push(ctrl)
 
@@ -2950,6 +2952,15 @@ EditorLoadStrategy(path) {
         recordedTowerText := IniRead(path, "Settings", "recordedTowers", towerText)
         if (Trim(recordedTowerText) = "")
             recordedTowerText := towerText
+        hotbarRemapEnabled := EditorSettingIsOn(IniRead(path, "Settings", "hotbarRemap", "OFF"))
+        arrangedTowerText := IniRead(path, "Settings", "arrangedTowers", "")
+        if (Trim(arrangedTowerText) = "") {
+            legacyRemap := BuildTowerHotbarRemap(recordedTowerText, towerText)
+            arrangedTowerText := (hotbarRemapEnabled && legacyRemap.valid) ? towerText : recordedTowerText
+        }
+        arrangedRemap := BuildTowerHotbarRemap(recordedTowerText, arrangedTowerText)
+        if (!arrangedRemap.valid)
+            arrangedTowerText := recordedTowerText
         modifierText := IniRead(path, "Settings", "modifiers", "")
         abstractSlot := NormalizeAbstractTowerSlot(IniRead(path, "Settings", "abstractSlot", 0))
 
@@ -2960,6 +2971,7 @@ EditorLoadStrategy(path) {
                 towerList.Push(towerName)
         }
         recordedTowerList := SplitTowerNames(recordedTowerText)
+        arrangedTowerList := SplitTowerNames(arrangedTowerText)
 
         if (abstractSlot = 0) {
             for index, towerName in towerList {
@@ -2974,13 +2986,14 @@ EditorLoadStrategy(path) {
         Editor_ModeCtrl.Text := modeName
         EditorRecordedTowerText := TowerListToText(recordedTowerList)
         for index, originalCtrl in EditorOriginalTowerCtrls
-            originalCtrl.Value := index <= recordedTowerList.Length ? recordedTowerList[index] : "—"
+            originalCtrl.Value := index <= arrangedTowerList.Length ? arrangedTowerList[index] : "—"
         EditorRefreshOriginalTowerStyles()
         for index, towerCtrl in EditorTowerCtrls
-            towerCtrl.Value := index <= towerList.Length ? towerList[index] : ""
-        EditorHotbarChanged()
-
+            towerCtrl.Text := index <= towerList.Length ? towerList[index] : ""
         Editor_AbstractCtrl.Choose(abstractSlot + 1)
+        if (abstractSlot > 0 && abstractSlot <= EditorTowerCtrls.Length)
+            EditorTowerCtrls[abstractSlot].Text := "Abstract"
+        EditorHotbarChanged()
 
         selectedModifiers := Map()
         for rawModifier in StrSplit(modifierText, ",") {
@@ -3073,7 +3086,8 @@ EditorHotbarDragMouseMove(wParam, lParam, msg, hwnd) {
 }
 
 EditorHotbarDragMouseUp(wParam, lParam, msg, hwnd) {
-    global EditorHotbarDragSource, EditorHotbarDragTarget, EditorHotbarDragMoved, EditorTowerCtrls
+    global EditorHotbarDragSource, EditorHotbarDragTarget, EditorHotbarDragMoved
+    global EditorTowerCtrls, EditorOriginalTowerCtrls
     if (EditorHotbarDragSource = 0)
         return
 
@@ -3096,12 +3110,16 @@ EditorHotbarDragMouseUp(wParam, lParam, msg, hwnd) {
     EditorRefreshOriginalTowerStyles()
 
     if (didSwap) {
+        sourceOriginal := EditorOriginalTowerCtrls[sourceSlot].Text
+        targetOriginal := EditorOriginalTowerCtrls[targetSlot].Text
         sourceTower := EditorTowerCtrls[sourceSlot].Text
         targetTower := EditorTowerCtrls[targetSlot].Text
+        EditorOriginalTowerCtrls[sourceSlot].Text := targetOriginal
+        EditorOriginalTowerCtrls[targetSlot].Text := sourceOriginal
         EditorTowerCtrls[sourceSlot].Text := targetTower
         EditorTowerCtrls[targetSlot].Text := sourceTower
         EditorHotbarChanged()
-        EditorSetStatus("Equipped hotbar swapped: slot " sourceSlot " and slot " targetSlot ". Save to keep the new order.")
+        EditorSetStatus("Slot arrangement changed: slot " sourceSlot " and slot " targetSlot ". Original and Equipped moved together; save to keep it.")
     } else {
         EditorHotbarChanged()
     }
@@ -3125,10 +3143,15 @@ EditorHotbarSlotAtScreenPoint(screenX, screenY) {
 }
 
 EditorRefreshOriginalTowerStyles(sourceSlot := 0, targetSlot := 0) {
-    global EditorOriginalTowerCtrls
+    global EditorOriginalTowerCtrls, EditorTowerCtrls
     for slot, originalCtrl in EditorOriginalTowerCtrls {
         background := "170E10"
         textColor := ThemeColor("TextSecondary")
+        if (slot <= EditorTowerCtrls.Length
+            && NormalizeTowerIdentity(originalCtrl.Text) != NormalizeTowerIdentity(EditorTowerCtrls[slot].Text)) {
+            background := "241217"
+            textColor := ThemeColor("AccentHover")
+        }
         if (slot = targetSlot && targetSlot != sourceSlot) {
             background := ThemeColor("AccentDark")
             textColor := ThemeColor("TextPrimary")
@@ -3142,8 +3165,81 @@ EditorRefreshOriginalTowerStyles(sourceSlot := 0, targetSlot := 0) {
     }
 }
 
-EditorHotbarChanged(*) {
+EditorOriginalTowerList() {
+    global EditorOriginalTowerCtrls
+    towers := []
+    for originalCtrl in EditorOriginalTowerCtrls {
+        towerName := Trim(originalCtrl.Text)
+        if (towerName != "" && towerName != "—")
+            towers.Push(towerName)
+    }
+    return towers
+}
+
+EditorOriginalTowerForSlot(slot) {
+    global EditorOriginalTowerCtrls
+    if (slot < 1 || slot > EditorOriginalTowerCtrls.Length)
+        return ""
+    towerName := Trim(EditorOriginalTowerCtrls[slot].Text)
+    return towerName = "—" ? "" : towerName
+}
+
+EditorAbstractSlotChanged(ctrl, *) {
+    global EditorSyncingAbstract, Editor_AbstractCtrl, EditorTowerCtrls
+    if (EditorSyncingAbstract)
+        return
+
+    EditorSyncingAbstract := true
+    desiredSlot := Editor_AbstractCtrl.Value - 1
+    for slot, towerCtrl in EditorTowerCtrls {
+        if (NormalizeTowerIdentity(towerCtrl.Text) = "abstract" && slot != desiredSlot)
+            towerCtrl.Text := EditorOriginalTowerForSlot(slot)
+    }
+    if (desiredSlot > 0 && desiredSlot <= EditorTowerCtrls.Length)
+        EditorTowerCtrls[desiredSlot].Text := "Abstract"
+    EditorSyncingAbstract := false
+    EditorHotbarChanged()
+}
+
+EditorSyncAbstractSelection(changedCtrl := 0) {
+    global EditorSyncingAbstract, Editor_AbstractCtrl, EditorTowerCtrls
+    if (EditorSyncingAbstract)
+        return
+
+    EditorSyncingAbstract := true
+    changedSlot := 0
+    if (changedCtrl) {
+        for slot, towerCtrl in EditorTowerCtrls {
+            if (towerCtrl.Hwnd = changedCtrl.Hwnd) {
+                changedSlot := slot
+                break
+            }
+        }
+    }
+
+    if (changedSlot > 0 && NormalizeTowerIdentity(EditorTowerCtrls[changedSlot].Text) = "abstract") {
+        for slot, towerCtrl in EditorTowerCtrls {
+            if (slot != changedSlot && NormalizeTowerIdentity(towerCtrl.Text) = "abstract")
+                towerCtrl.Text := EditorOriginalTowerForSlot(slot)
+        }
+        Editor_AbstractCtrl.Choose(changedSlot + 1)
+    } else {
+        abstractSlot := 0
+        for slot, towerCtrl in EditorTowerCtrls {
+            if (NormalizeTowerIdentity(towerCtrl.Text) = "abstract") {
+                abstractSlot := slot
+                break
+            }
+        }
+        Editor_AbstractCtrl.Choose(abstractSlot + 1)
+    }
+    EditorSyncingAbstract := false
+}
+
+EditorHotbarChanged(changedCtrl := 0, *) {
     global EditorRecordedTowerText, EditorTowerCtrls, Editor_HotbarMode, Editor_HotbarHint
+
+    EditorSyncAbstractSelection(changedCtrl)
 
     equippedTowers := []
     for towerCtrl in EditorTowerCtrls {
@@ -3151,21 +3247,43 @@ EditorHotbarChanged(*) {
         if (towerName != "")
             equippedTowers.Push(towerName)
     }
-    remap := BuildTowerHotbarRemap(EditorRecordedTowerText, TowerListToText(equippedTowers))
+    arrangedTowers := EditorOriginalTowerList()
+    remap := BuildTowerHotbarRemap(EditorRecordedTowerText, TowerListToText(arrangedTowers))
 
-    if (remap.valid && remap.changed) {
-        Editor_HotbarMode.Value := "HOTBAR SWAP READY  /  " remap.moveCount " SLOT MOVES"
+    replacementSlots := []
+    Loop Max(arrangedTowers.Length, equippedTowers.Length) {
+        arrangedTower := A_Index <= arrangedTowers.Length ? arrangedTowers[A_Index] : ""
+        equippedTower := A_Index <= equippedTowers.Length ? equippedTowers[A_Index] : ""
+        if (NormalizeTowerIdentity(arrangedTower) != NormalizeTowerIdentity(equippedTower))
+            replacementSlots.Push("S" A_Index)
+    }
+    replacementCount := replacementSlots.Length
+    replacementSummary := ""
+    for index, slotName in replacementSlots
+        replacementSummary .= (index = 1 ? "" : ", ") slotName
+
+    if (!remap.valid) {
+        Editor_HotbarMode.Value := "ARRANGEMENT INVALID"
+        Editor_HotbarMode.SetFont("c" ThemeColor("Warning") " w700")
+        Editor_HotbarHint.Value := remap.message
+    } else if (remap.changed && replacementCount > 0) {
+        Editor_HotbarMode.Value := "ARRANGED + CUSTOM  /  " remap.moveCount " MOVES + " replacementCount " CHANGES"
         Editor_HotbarMode.SetFont("c" ThemeColor("Accent") " w700")
-        Editor_HotbarHint.Value := "Same tower set confirmed. Recorded placements will follow each tower to its Equipped slot."
-    } else if (remap.valid) {
+        Editor_HotbarHint.Value := "Original positions control recorded-step remapping; Equipped-only changes are replacements (" replacementSummary ")."
+    } else if (remap.changed) {
+        Editor_HotbarMode.Value := "ARRANGEMENT READY  /  " remap.moveCount " SLOT MOVES"
+        Editor_HotbarMode.SetFont("c" ThemeColor("Accent") " w700")
+        Editor_HotbarHint.Value := "Arrangement only: Original and Equipped moved together; recorded steps will follow the new slots."
+    } else if (replacementCount > 0) {
+        Editor_HotbarMode.Value := "TOWER CHANGES  /  " replacementCount " REPLACEMENTS"
+        Editor_HotbarMode.SetFont("c" ThemeColor("Warning") " w700")
+        Editor_HotbarHint.Value := "Equipped differs from Original in " replacementSummary ". Recorded slot positions are unchanged."
+    } else {
         Editor_HotbarMode.Value := "RECORDED ORDER  /  NO REMAP"
         Editor_HotbarMode.SetFont("c" ThemeColor("TextMuted") " w600")
-        Editor_HotbarHint.Value := "Drag an Original card onto another slot to swap Equipped positions, or use a dropdown to replace a tower."
-    } else {
-        Editor_HotbarMode.Value := "CUSTOM TOWERS  /  FIXED SLOTS"
-        Editor_HotbarMode.SetFont("c" ThemeColor("Warning") " w700")
-        Editor_HotbarHint.Value := "A dropdown tower differs from Original, so swap mapping is off and recorded slot numbers stay fixed."
+        Editor_HotbarHint.Value := "Drag Original cards to rearrange both rows; edit an Equipped dropdown to replace only that tower."
     }
+    EditorRefreshOriginalTowerStyles()
 }
 
 EditorAutoSkipModeChanged(changedCtrl, *) {
@@ -3245,6 +3363,10 @@ EditorCollectSettings() {
     if (towers.Length = 0)
         return {ok: false, message: "Add at least one tower to the hotbar."}
 
+    arrangedTowers := EditorOriginalTowerList()
+    if (arrangedTowers.Length != towers.Length)
+        return {ok: false, message: "Original and Equipped must contain the same number of occupied slots."}
+
     abstractSlot := Editor_AbstractCtrl.Value - 1
     for index, towerName in towers {
         if (StrLower(towerName) = "abstract" && index != abstractSlot) {
@@ -3257,10 +3379,13 @@ EditorCollectSettings() {
         towers[abstractSlot] := "Abstract"
 
     towerText := TowerListToText(towers)
+    arrangedTowerText := TowerListToText(arrangedTowers)
     recordedTowerText := Trim(EditorRecordedTowerText)
     if (recordedTowerText = "")
-        recordedTowerText := towerText
-    hotbarRemap := BuildTowerHotbarRemap(recordedTowerText, towerText)
+        recordedTowerText := arrangedTowerText
+    hotbarRemap := BuildTowerHotbarRemap(recordedTowerText, arrangedTowerText)
+    if (!hotbarRemap.valid)
+        return {ok: false, message: "The Original arrangement is invalid: " hotbarRemap.message}
     hotbarRemapEnabled := hotbarRemap.valid && hotbarRemap.changed
 
     modifierText := ""
@@ -3287,6 +3412,7 @@ EditorCollectSettings() {
             modeName: modeName,
             towers: towerText,
             recordedTowers: recordedTowerText,
+            arrangedTowers: arrangedTowerText,
             hotbarRemap: hotbarRemapEnabled ? "ON" : "OFF",
             hotbarRemapSummary: hotbarRemapEnabled ? hotbarRemap.summary : "",
             abstractSlot: abstractSlot,
@@ -3307,6 +3433,7 @@ EditorWriteSettings(path, data) {
     IniWrite(data.modeName, path, "Settings", "difficulty")
     IniWrite(data.towers, path, "Settings", "requiredTowers")
     IniWrite(data.recordedTowers, path, "Settings", "recordedTowers")
+    IniWrite(data.arrangedTowers, path, "Settings", "arrangedTowers")
     IniWrite(data.hotbarRemap, path, "Settings", "hotbarRemap")
     IniWrite(data.abstractSlot, path, "Settings", "abstractSlot")
     IniWrite(data.modifiers, path, "Settings", "modifiers")
@@ -5221,10 +5348,15 @@ LoadStrategyFile(file) {
     difficulty := IniRead(file, "Settings", "difficulty", "")
     requiredTowers  := IniRead(file, "Settings", "requiredTowers",  "")
     recordedTowersSetting := IniRead(file, "Settings", "recordedTowers", requiredTowers)
+    arrangedTowersSetting := IniRead(file, "Settings", "arrangedTowers", "")
     StrategyHotbarSlotMap := Map()
     StrategyHotbarRemapSummary := ""
     if EditorSettingIsOn(IniRead(file, "Settings", "hotbarRemap", "OFF")) {
-        hotbarRemap := BuildTowerHotbarRemap(recordedTowersSetting, requiredTowers)
+        if (Trim(arrangedTowersSetting) = "") {
+            legacyRemap := BuildTowerHotbarRemap(recordedTowersSetting, requiredTowers)
+            arrangedTowersSetting := legacyRemap.valid ? requiredTowers : recordedTowersSetting
+        }
+        hotbarRemap := BuildTowerHotbarRemap(recordedTowersSetting, arrangedTowersSetting)
         if (hotbarRemap.valid && hotbarRemap.changed) {
             StrategyHotbarSlotMap := hotbarRemap.slots
             StrategyHotbarRemapSummary := hotbarRemap.summary
