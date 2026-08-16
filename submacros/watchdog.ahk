@@ -230,6 +230,9 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     expVal := 0
     strategyFile := IniRead(StateFile, "State", "Strategy", "")
     activeRunId := IniRead(StateFile, "State", "ActiveRunId", "")
+    lastCompletedRunId := IniRead(StateFile, "State", "LastCompletedRunId", "")
+    if (activeRunId != "" && activeRunId = lastCompletedRunId)
+        return
     activeStrategyName := IniRead(StateFile, "State", "ActiveStrategyName", "")
     activeStrategyFingerprint := IniRead(StateFile, "State", "ActiveStrategyFingerprint", "legacy")
     activeStrategyDisplay := IniRead(StateFile, "State", "ActiveStrategyDisplay", "")
@@ -297,14 +300,6 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     } else if (Restart2.status = "success" && Restart2.score > 0.7) {
         FoundX := Restart2.x
         FoundY := Restart2.y
-    } else if (shouldSendWebhook) {
-        pBitmap := Gdip_BitmapFromScreen()
-        if (pBitmap) {
-            headerTitle := (matchResult = "Triumph") ? "### :trophy: TRIUMPH!" : "### :skull: YOU LOST!"
-            color := (matchResult = "Triumph") ? 3066993 : 12434877
-            SendScreenshot(pBitmap, headerTitle, color)
-            Gdip_DisposeImage(pBitmap)
-        }
     }
 
     ; Result OCR is always collected for local session and lifetime statistics
@@ -524,6 +519,8 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
         description .= "-# Total Matches: " totalMatches ", wins: " totalTriumphs ", losses: " totalLosses ", W/R: " winrate "%, W/L ratio: " wlRatioStr ", " coinsPerHour " coins/h, " gemsPerHour " gems/h, " expPerHour " exp/h, avg. time: " avgTimeStr
     }
 
+    ; Emit exactly one result webhook. The old missing-anchor fallback sent a
+    ; header here early and then this full report, producing duplicate posts.
     if (shouldSendWebhook) {
         pBitmap := Gdip_BitmapFromScreen()
         if (pBitmap) {

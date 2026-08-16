@@ -68,6 +68,23 @@ global UITheme := Map(
     "Info", "4F8CFF"
 )
 
+; Editable ComboBoxes use the current public, exclusive and evolved TDS roster.
+; Roster checked against the TDS Wiki on 2026-08-17. Custom typing stays enabled
+; so a newly released tower or a macro-specific alias never becomes a blocker.
+global SupportedTowerNames := [
+    "Accelerator", "Ace Pilot", "Archer", "Assassin", "Biologist", "Boomerang", "Brawler",
+    "Commander", "Commando", "Cowboy", "Crook Boss", "Cryomancer", "Demoman", "DJ", "DJ Booth",
+    "Electroshocker", "Elementalist", "Elf Camp", "Enforcer", "Engineer", "Executioner", "Farm",
+    "Firework Technician", "Freezer", "Frost Blaster", "Gatling Gun", "Gladiator", "Hacker",
+    "Hallow Punk", "Harvester", "Hunter", "Jester", "Juggernaut", "Kingpin", "Mecha Base", "Medic",
+    "Mercenary Base", "Militant", "Military Base", "Minigunner", "Mortar", "Necromancer", "Operator",
+    "Paintballer", "Pulse Trooper", "Pursuit", "Pyromancer", "Ranger", "Rocketeer", "Saboteur", "Scout",
+    "Shotgunner", "Slasher", "Sledger", "Slime Trooper", "Sniper", "Snowballer", "Soldier",
+    "Spotlight Tech", "Swarmer", "Tesla", "Toxic Gunner", "Trapper", "Turret", "Warden", "Warlock",
+    "War Machine", "G Cowboy", "G Crook Boss", "G Minigunner", "G Pyromancer", "G Scout",
+    "G Snowballer", "G Soldier"
+]
+
 ThemeColor(name) {
     global UITheme
     return UITheme[name]
@@ -262,8 +279,11 @@ if (TimeScaleMode = "1.5x") {
 
 global gamemap := "", difficulty := "", requiredTowers := ""
 global AbstractTowerSlot := 0
+global StrategyHotbarSlotMap := Map(), StrategyHotbarRemapSummary := ""
 global autoChain := "OFF", autoCaravan := "OFF", autoDropTheBeat := "OFF"
 global Commander := false, AutoSkip := "ON", AbilitySpam := "ON"
+global AdvancedAutoSkip := "OFF", AdvancedSkipWaves := "", AdvancedSkipWaveSet := Map()
+global AdvancedLastSkippedWave := 0
 global AutoSkipStopWave := 0, AutoSkipSuccessfulCount := 0
 global AutoSkipLastDetectedWave := 0, AutoSkipBlockLogged := false
 
@@ -319,6 +339,8 @@ else if FileExist(IconPath)
 
 WM_LBUTTONDOWN_Drag(wParam, lParam, msg, hwnd) {
     global MainGui
+    if EditorHotbarTryBeginDrag(hwnd)
+        return 0
     If (MainGui) {
         if (hwnd != MainGui.Hwnd) {
             return
@@ -640,12 +662,14 @@ if (autoRun = 1 && autoStrat != "" && FileExist(autoStrat)) {
 
 global MainGui := Gui("-Caption +Border +LastFound")
 MainGui.BackColor := ThemeColor("App")
+global MainWindowWidth := 760
+global MainWindowHeight := 610
 
 global SystemHwnds := Map()
 
-sysAccent := MainGui.Add("Progress", "x0 y0 w700 h3 Disabled Background" ThemeColor("Accent"), 0)
+sysAccent := MainGui.Add("Progress", "x0 y0 w" MainWindowWidth " h3 Disabled Background" ThemeColor("Accent"), 0)
 SystemHwnds[sysAccent.Hwnd] := true
-sysBar1 := MainGui.Add("Progress", "x0 y3 w700 h39 Disabled Background" ThemeColor("Surface"), 0)
+sysBar1 := MainGui.Add("Progress", "x0 y3 w" MainWindowWidth " h39 Disabled Background" ThemeColor("Surface"), 0)
 SystemHwnds[sysBar1.Hwnd] := true
 
 MainGui.SetFont("s11 w300 c" ThemeColor("TextPrimary"), "Segoe UI")
@@ -662,20 +686,20 @@ GuiTitleCtrl.OnEvent("Click", MoveWindow)
 SystemHwnds[GuiTitleCtrl.Hwnd] := true
 
 MainGui.SetFont("s11 w400 c" ThemeColor("TextPrimary"), "Marlett")
-global BtnMin   := MainGui.Add("Text", "x600 y12 w30 h25 Center BackgroundTrans", "0")
+global BtnMin   := MainGui.Add("Text", "x660 y12 w30 h25 Center BackgroundTrans", "0")
 BtnMin.OnEvent("Click", MinimizeWindow)
 SystemHwnds[BtnMin.Hwnd] := true
 
 MainGui.SetFont("s11 w400 c" ThemeColor("TextMuted"), "Marlett")
-sysDot := MainGui.Add("Text", "x630 y12 w30 h25 Center BackgroundTrans", "1")
+sysDot := MainGui.Add("Text", "x690 y12 w30 h25 Center BackgroundTrans", "1")
 SystemHwnds[sysDot.Hwnd] := true
 
 MainGui.SetFont("s11 w400 c" ThemeColor("TextPrimary"), "Marlett")
-global BtnClose := MainGui.Add("Text", "x660 y12 w30 h25 Center BackgroundTrans", "r")
+global BtnClose := MainGui.Add("Text", "x720 y12 w30 h25 Center BackgroundTrans", "r")
 BtnClose.OnEvent("Click", CloseWindow)
 SystemHwnds[BtnClose.Hwnd] := true
 
-sysLine1 := MainGui.Add("Progress", "x0 y42 w700 h1 Background" ThemeColor("BorderSubtle"), 0)
+sysLine1 := MainGui.Add("Progress", "x0 y42 w" MainWindowWidth " h1 Background" ThemeColor("BorderSubtle"), 0)
 SystemHwnds[sysLine1.Hwnd] := true
 
 
@@ -690,9 +714,9 @@ global TAB3 := []
 
 ;==
 
-tabNames := ["Main", "Record", "Party", "Webhook", "Settings", "Tools", "Analytics", "Credits"]
-global TabStartX := 17
-global TabStep := 83
+tabNames := ["Main", "Record", "Party", "Webhook", "Settings", "Tools", "Analytics", "Editor", "Credits"]
+global TabStartX := 15
+global TabStep := 81
 global TabWidth := 74
 
 Loop tabNames.Length {
@@ -712,7 +736,7 @@ Loop tabNames.Length {
 global TabLine := MainGui.Add("Progress", "x" TabStartX " y75 w" TabWidth " h2 Background" ThemeColor("Accent"), 0)
 SystemHwnds[TabLine.Hwnd] := true 
 
-sysLine2 := MainGui.Add("Progress", "x0 y77 w700 h1 Background" ThemeColor("BorderSubtle"), 0)
+sysLine2 := MainGui.Add("Progress", "x0 y77 w" MainWindowWidth " h1 Background" ThemeColor("BorderSubtle"), 0)
 SystemHwnds[sysLine2.Hwnd] := true
 
 ; tab 1 - MAIN ===========================
@@ -1079,9 +1103,9 @@ OnMessage(0x020A, OnMouseWheel)
 
 
 MainGui.SetFont("s11 w600 c" ThemeColor("TextPrimary"), "Segoe UI")
-global Tab1_Start := MainGui.Add("Text", "x30 y500 w300 h40 Center Background" ThemeColor("Accent") " +Border 0x200", "Start (F1)")
+global Tab1_Start := MainGui.Add("Text", "x30 y545 w300 h40 Center Background" ThemeColor("Accent") " +Border 0x200", "Start (F1)")
 Tab1_Start.OnEvent("Click", StartStrategy)
-global Tab1_Stop := MainGui.Add("Text",  "x340 y500 w330 h40 Center Background" ThemeColor("Surface") " +Border 0x200", "Stop (F2)")
+global Tab1_Stop := MainGui.Add("Text",  "x340 y545 w330 h40 Center Background" ThemeColor("Surface") " +Border 0x200", "Stop (F2)")
 Tab1_Stop.OnEvent("Click", StopStrategy)
 SetButtonRole(Tab1_Start, "Primary")
 SetButtonRole(Tab1_Stop, "Danger")
@@ -1125,50 +1149,62 @@ global RecDiffCtrl := MainGui.Add("DropDownList", "x380 y142 w220 Hidden vRecDif
 ])
 
 MainGui.SetFont("s9 w400 cB79AA0")
-global Tab2_Lbl3 := MainGui.Add("Text", "x30 y235 w80 h20 Hidden", "Modifiers:")
+global Tab2_Lbl3 := MainGui.Add("Text", "x30 y260 w80 h20 Hidden", "Modifiers:")
 MainGui.SetFont("s9 w400 c000000")
 
-global RecModifiersCtrl := MainGui.Add("ListBox", "x110 y232 w220 h200 Multi Hidden vRecModifiers", [
+global RecModifiersCtrl := MainGui.Add("ListBox", "x110 y257 w220 h165 Multi Hidden vRecModifiers", [
     "Broke", "Exploding", "Flying", "Fog", "Glass", 
     "Healthy", "Hidden", "Inflation", "Jailed", "Limitation", 
     "Committed", "Quarantine", "Speedy"
 ])
 
 MainGui.SetFont("s9 w400 cB79AA0", "Segoe UI")
-global Tab2_Info2 := MainGui.Add("Text", "x20 w60 y275 BackgroundTrans Hidden", "Hold CTRL to deselect/select multiple modifiers.")
+global Tab2_Info2 := MainGui.Add("Text", "x20 w70 y298 BackgroundTrans Hidden", "Hold CTRL to select multiple modifiers.")
 
-MainGui.SetFont("s9 w400 cB79AA0")
-global Tab2_Lbl4 := MainGui.Add("Text", "x30 y185 w80 h20 Hidden", "Towers:")
-MainGui.SetFont("s9 w400 c000000")
-global RecTowersCtrl := MainGui.Add("Edit", "x80 y182 w220 h22 Hidden vRecRequiredTowers", requiredTowers)
+MainGui.SetFont("s9 w600 cEF2B2D", "Segoe UI")
+global Tab2_Lbl4 := MainGui.Add("Text", "x30 y176 w180 h20 Hidden", "Tower Hotbar")
+global RecTowerLabels := []
+global RecTowerCtrls := []
+initialRecTowers := SplitTowerNames(requiredTowers)
+Loop 5 {
+    towerX := 30 + ((A_Index - 1) * 128)
+    MainGui.SetFont("s8 w600 cB79AA0", "Segoe UI")
+    towerLabel := MainGui.Add("Text", "x" towerX " y194 w118 h18 Hidden", "SLOT " A_Index)
+    MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
+    towerCtrl := MainGui.Add("ComboBox", "x" towerX " y211 w118 Hidden", SupportedTowerNames)
+    if (A_Index <= initialRecTowers.Length)
+        towerCtrl.Text := initialRecTowers[A_Index]
+    RecTowerLabels.Push(towerLabel)
+    RecTowerCtrls.Push(towerCtrl)
+}
 
-MainGui.SetFont("s9 w400 cB79AA0", "Segoe UI")
-global Tab2_Info1 := MainGui.Add("Text", "x320 y173 BackgroundTrans Hidden", "Enter towers for your strategy using comma after every tower.`nMinigunner, Ranger, Commander, DJ, Military Base for example.`nType G Whatever if the tower you using NEEDS to be golden.")
+MainGui.SetFont("s8 w400 c987D83", "Segoe UI")
+global Tab2_Info1 := MainGui.Add("Text", "x30 y238 w640 h17 BackgroundTrans Hidden", "Type a tower name or choose one. Golden perks use G Tower (for example, G Soldier).")
 
-MainGui.Add("Progress", "x360 y232 w320 h1 Hidden Background43242B vTab2_Line2", 0)
+MainGui.Add("Progress", "x360 y257 w320 h1 Hidden Background43242B vTab2_Line2", 0)
 global Tab2_Line2 := MainGui["Tab2_Line2"]
 
 MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
-global RecAutoChainCtrl := MainGui.Add("Checkbox", "x360 y255 Hidden vRecAutoChain Checked" (autoChain="ON"?1:0), "Use Call of Arms")
-global RecAutoCaravanCtrl := MainGui.Add("Checkbox", "x490 y255 Hidden vRecAutoCaravan Checked" (autoCaravan="ON"?1:0), "Use Support Caravan")
-global RecAutoDropCtrl := MainGui.Add("Checkbox", "x360 y275 Hidden vRecAutoDropTheBeat Checked" (autoDropTheBeat="ON"?1:0), "Use Drop the Beat")
+global RecAutoChainCtrl := MainGui.Add("Checkbox", "x360 y278 Hidden vRecAutoChain Checked" (autoChain="ON"?1:0), "Use Call of Arms")
+global RecAutoCaravanCtrl := MainGui.Add("Checkbox", "x490 y278 Hidden vRecAutoCaravan Checked" (autoCaravan="ON"?1:0), "Use Support Caravan")
+global RecAutoDropCtrl := MainGui.Add("Checkbox", "x360 y300 Hidden vRecAutoDropTheBeat Checked" (autoDropTheBeat="ON"?1:0), "Use Drop the Beat")
 
-MainGui.Add("Progress", "x360 y300 w320 h1 Hidden Background43242B vTab2_Line3", 0)
+MainGui.Add("Progress", "x360 y325 w320 h1 Hidden Background43242B vTab2_Line3", 0)
 global Tab2_Line3 := MainGui["Tab2_Line3"]
-global RecAutoSkipCtrl := MainGui.Add("Checkbox", "x360 y315 h20 Hidden vRecAutoSkip", "Auto Skip Waves")
-global RecAbilitySpamCtrl := MainGui.Add("Checkbox", "x490 y315 h20 Hidden vRecAbilitySpam", "Abilities Spam")
-global RecAbstractSlotEnabledCtrl := MainGui.Add("Checkbox", "x360 y340 h20 Hidden vRecAbstractSlotEnabled", "Abstract XP tower")
+global RecAutoSkipCtrl := MainGui.Add("Checkbox", "x360 y338 h20 Hidden vRecAutoSkip", "Auto Skip Waves")
+global RecAbilitySpamCtrl := MainGui.Add("Checkbox", "x490 y338 h20 Hidden vRecAbilitySpam", "Abilities Spam")
+global RecAbstractSlotEnabledCtrl := MainGui.Add("Checkbox", "x360 y363 h20 Hidden vRecAbstractSlotEnabled", "Abstract XP tower")
 RecAbstractSlotEnabledCtrl.OnEvent("Click", UpdateRecAbstractSlotControls)
 MainGui.SetFont("s9 w400 cB79AA0")
-global RecAbstractSlotLabel := MainGui.Add("Text", "x505 y342 w70 h20 Hidden", "Hotbar slot:")
+global RecAbstractSlotLabel := MainGui.Add("Text", "x505 y365 w70 h20 Hidden", "Hotbar slot:")
 MainGui.SetFont("s9 w400 cFFFFFF")
-global RecAbstractSlotCtrl := MainGui.Add("DropDownList", "x575 y337 w55 Hidden Choose1 vRecAbstractSlot", ["1", "2", "3", "4", "5"])
+global RecAbstractSlotCtrl := MainGui.Add("DropDownList", "x575 y360 w55 Hidden Choose1 vRecAbstractSlot", ["1", "2", "3", "4", "5"])
 RecAbstractSlotCtrl.Enabled := false
 MainGui.SetFont("s8 w400 cB79AA0")
-global RecAbstractSlotInfo := MainGui.Add("Text", "x360 y365 w320 h24 BackgroundTrans Hidden", "The selected slot accepts any equipped tower and keeps its recorded actions.")
-global Tab2_Info := MainGui.Add("Link", "x360 y395 w320 h50 Hidden", "
+global RecAbstractSlotInfo := MainGui.Add("Text", "x360 y388 w320 h24 BackgroundTrans Hidden", "The selected slot accepts any equipped tower and keeps its recorded actions.")
+global Tab2_Info := MainGui.Add("Link", "x360 y413 w320 h34 Hidden", "
 (
-There you can create your own strategy and save it into a file. Watch the tutorial here: <a href="https://www.youtube.com/watch?v=j8Y5qHBaYOs&feature=youtu.be">https://www.youtube.com/watch?v=j8Y5qHBaYOs&feature=youtu.be</a>. I recommend using the timescale ticket when recording complex strategies.
+Record a strategy and save it into a file. <a href="https://www.youtube.com/watch?v=j8Y5qHBaYOs&feature=youtu.be">Watch the tutorial</a>. Timescale is recommended for complex strategies.
 )")
 
 global RecMoveCtrl := MainGui.Add("Checkbox", "x30 y452 w60 h20 Hidden vRecMoveEnabled Checked" (MoveEnabled?1:0), "Move")
@@ -1182,15 +1218,26 @@ MainGui.SetFont("s9 w400 c000000")
 global RecMoveDurCtrl := MainGui.Add("Edit", "x310 y450 w50 h22 Hidden vRecMoveDuration", 1000)
 
 MainGui.SetFont("s11 w400 cFFFFFF", "Segoe UI")
-global Tab2_Btn1 := MainGui.Add("Text", "x30  y500 w300 h40 Center Background120B0D +Border 0x200 Hidden", "Start Recording")
+global Tab2_Btn1 := MainGui.Add("Text", "x30  y545 w300 h40 Center Background120B0D +Border 0x200 Hidden", "Start Recording")
 Tab2_Btn1.OnEvent("Click", StartRecording)
 MainGui.SetFont("s11 w400 c808080", "Segoe UI")
-global Tab2_Btn2 := MainGui.Add("Text", "x340 y500 w330 h40 Center Background120B0D +Border 0x200 Hidden", "Stop")
+global Tab2_Btn2 := MainGui.Add("Text", "x340 y545 w330 h40 Center Background120B0D +Border 0x200 Hidden", "Stop")
 Tab2_Btn2.OnEvent("Click", StopRecord)
 SetButtonRole(Tab2_Btn1, "Primary")
 Tab2_Btn2.ThemeRole := "Danger"
 
 HoverEffect_btns.Push(Tab2_Btn1) 
+
+global Tab2Ctrls := [Tab2_Title, Tab2_Line1, Tab2_Lbl1, RecMapsD, Tab2_Lbl2, RecDiffCtrl,
+    Tab2_Lbl3, RecModifiersCtrl, Tab2_Info2, Tab2_Lbl4, Tab2_Info1, Tab2_Line2, Tab2_Line3,
+    RecAutoChainCtrl, RecAutoCaravanCtrl, RecAutoDropCtrl, RecAutoSkipCtrl, RecAbilitySpamCtrl,
+    RecAbstractSlotEnabledCtrl, RecAbstractSlotLabel, RecAbstractSlotCtrl, RecAbstractSlotInfo,
+    Tab2_Info, RecMoveCtrl, DIRECTIONTEXTCtrl, RecMoveDirCtrl, Tab2_Txt4, RecMoveDurCtrl,
+    Tab2_Btn1, Tab2_Btn2]
+for ctrl in RecTowerLabels
+    Tab2Ctrls.Push(ctrl)
+for ctrl in RecTowerCtrls
+    Tab2Ctrls.Push(ctrl)
 
 ; tab 3 - MULTIPLAYER ===========================
 
@@ -1228,7 +1275,7 @@ global MultiplayerEnabledTGL := MainGui.Add("Checkbox", "x30 y368 Hidden vMultip
 global Tab3_Line3 := MainGui.Add("Progress", "x30 y360 w640 h1 Hidden Background43242B", 0)
 
 MainGui.SetFont("s11 w400 cFFFFFF")
-global Tab3_Btn1 := MainGui.Add("Text", "x30 y500 w645 h40 Center Background120B0D +Border 0x200 Hidden", "Save all settings")
+global Tab3_Btn1 := MainGui.Add("Text", "x30 y545 w645 h40 Center Background120B0D +Border 0x200 Hidden", "Save all settings")
 Tab3_Btn1.OnEvent("Click", SaveAllSettingsMULTIPLAYER)
 SetButtonRole(Tab3_Btn1, "Primary")
 
@@ -1267,9 +1314,9 @@ EnableWebhookLink2()
 WebhookSepatateTriumphScreenshotsCtrl.OnEvent("Click", EnableWebhookLink2)
 global Tab4_Info := MainGui.Add("Text", "x30 y400 w640 h100 Hidden", "Webhook sends real-time logs, screenshots, and currency stats to your Discord server.`nUseful to check if your macro is working while being outside.`nHow to get a webhook URL: Create your own Discord Server > Open any channel's settings > Integrations > Create Webhook > Copy Webhook URL.")
 MainGui.SetFont("s12 w400 cFFFFFF")
-global Tab4_Btn1 := MainGui.Add("Text", "x30  y500 w300 h40 Center Background120B0D +Border 0x200 Hidden", "Test Webhook")
+global Tab4_Btn1 := MainGui.Add("Text", "x30  y545 w300 h40 Center Background120B0D +Border 0x200 Hidden", "Test Webhook")
 Tab4_Btn1.OnEvent("Click", TestWebhook)
-global Tab4_Btn2 := MainGui.Add("Text", "x340 y500 w330 h40 Center Background120B0D +Border 0x200 Hidden", "Save webhook settings")
+global Tab4_Btn2 := MainGui.Add("Text", "x340 y545 w330 h40 Center Background120B0D +Border 0x200 Hidden", "Save webhook settings")
 Tab4_Btn2.OnEvent("Click", SaveWebhookSettings)
 SetButtonRole(Tab4_Btn2, "Primary")
 
@@ -1439,7 +1486,7 @@ global AlwaysOnTopCtrl := MainGui.Add("Checkbox", "x160 y465 Hidden", "Always On
 AlwaysOnTopCtrl.Value := (AlwaysOnTop = "1" || AlwaysOnTop = 1)
 
 MainGui.SetFont("s11 w400 cFFFFFF")
-global Tab5_Btn1 := MainGui.Add("Text", "x30 y500 w645 h40 Center Background120B0D +Border 0x200 Hidden", "Save all settings")
+global Tab5_Btn1 := MainGui.Add("Text", "x30 y545 w645 h40 Center Background120B0D +Border 0x200 Hidden", "Save all settings")
 Tab5_Btn1.OnEvent("Click", SaveAllSettings)
 SetButtonRole(Tab5_Btn1, "Primary")
 
@@ -1538,7 +1585,159 @@ global StatsCtrls := [Stats_Kicker, Stats_TITLE, Stats_Subtitle, Stats_ScopeLabe
     Stats_CoinsValue, Stats_GemsValue, Stats_XPValue,
     Stats_DetailsBG, Stats_RecentBG, Stats_DetailsTitle, Stats_RecentTitle, Stats_Details, Stats_Recent, Stats_Attribution]
 
-; tab 8 - credits ===========================
+; tab 8 - strategy editor ===========================
+
+global EditorStrategyPath := ""
+global EditorRecordedTowerText := ""
+global EditorHotbarDragSource := 0, EditorHotbarDragTarget := 0
+global EditorHotbarDragStartX := 0, EditorHotbarDragStartY := 0, EditorHotbarDragMoved := false
+global EditorSupportedMaps := [
+    "Abandoned City", "Area 52", "Autumn Falling", "Badlands II", "Black Spot Exchange",
+    "Candy Valley", "Cataclysm", "Chess Board", "Construction Crazy", "Coral Deep", "Crossroads",
+    "Crystal Cave", "Cyber City", "Dead Ahead", "Derelict Outpost", "Deserted Village", "Dusty Bridges",
+    "Enchanted Forest", "Farm Lands", "Forest Camp", "Forgetten Docks", "Four Seasons", "Fungi Island",
+    "Grass Isle", "Happy Home of Robloxia", "Harbor", "Honey Valley", "Hot Spot", "Iceville",
+    "Infernal Abyss", "Lay By", "Lighthaos", "Marshlands", "Mason Arch", "Medieval Times", "Meltdown",
+    "Midnight Issue", "Moon Base", "Musaceae Kingdom", "Necropolis", "Nether", "Night Station",
+    "Northern Lights", "Outskirts Commune", "Pier Pressure", "Pizza Party", "Polluted Wasteland II",
+    "Portland", "Retro Crossroads", "Retro Lighthouse", "Retro Rocket Arena", "Retro Stained Temple",
+    "Retro The Heights", "Retro Zone", "Rocket Arena", "Ruby Escort", "Sacred Mountains", "Sky Islands",
+    "Simplicity", "Space City", "Spring Fever", "Stained Temple", "Sugar Rush", "The Heavens", "The Heights",
+    "Toyboard", "Tropical Industries", "Tropical Isles", "U-Turn", "Unknown Garden", "Winter Abyss",
+    "Winter Bridges", "Winter Stronghold", "Wrecked Battlefield", "Wrecked Battlefield II", "Wretched Front"
+]
+global EditorSupportedModes := [
+    "Easy", "Casual", "Intermediate", "Molten", "Fallen", "Frost", "Hardcore", "Voidcore",
+    "Pizza Party", "Badlands II", "Polluted Wasteland II"
+]
+global EditorModifierNames := [
+    "Broke", "Exploding", "Flying", "Fog", "Glass", "Healthy", "Hidden", "Inflation", "Jailed",
+    "Limitation", "Committed", "Quarantine", "Speedy"
+]
+
+MainGui.SetFont("s8 w700 cEF2B2D", "Segoe UI")
+global Editor_Kicker := MainGui.Add("Text", "x30 y91 w700 Hidden Center", "KRONOX STRATEGY TOOLS  /  SAFE EDITOR")
+MainGui.SetFont("s16 w650 cF5E9EC", "Segoe UI Variable")
+global Editor_Title := MainGui.Add("Text", "x30 y107 w700 Hidden Center", "Strategy Editor")
+MainGui.SetFont("s9 w400 c987D83", "Segoe UI")
+global Editor_Subtitle := MainGui.Add("Text", "x30 y133 w700 Hidden Center", "Edit general settings without touching recorded Steps")
+
+MainGui.SetFont("s8 w650 cB79AA0", "Segoe UI")
+global Editor_FileLabel := MainGui.Add("Text", "x30 y160 w52 h22 Hidden 0x200", "FILE")
+MainGui.SetFont("s9 w400 c000000", "Segoe UI")
+global Editor_PathCtrl := MainGui.Add("Edit", "x82 y158 w468 h23 Hidden ReadOnly", "No strategy loaded")
+MainGui.SetFont("s9 w400 cF5E9EC", "Segoe UI")
+global Editor_BrowseBtn := MainGui.Add("Text", "x560 y158 w80 h23 Hidden Center +Border 0x200 Background120B0D", "Browse")
+global Editor_ReloadBtn := MainGui.Add("Text", "x650 y158 w80 h23 Hidden Center +Border 0x200 Background120B0D", "Reload")
+Editor_BrowseBtn.OnEvent("Click", EditorBrowseStrategy)
+Editor_ReloadBtn.OnEvent("Click", EditorReloadStrategy)
+SetButtonRole(Editor_BrowseBtn)
+SetButtonRole(Editor_ReloadBtn)
+HoverEffect_btns.Push(Editor_BrowseBtn)
+HoverEffect_btns.Push(Editor_ReloadBtn)
+
+MainGui.SetFont("s8 w400 c987D83", "Segoe UI")
+global Editor_Status := MainGui.Add("Text", "x30 y184 w700 h17 Hidden", "Browse to a .strat file. Save Copy is the safest first edit.")
+global Editor_Line1 := MainGui.Add("Progress", "x30 y205 w700 h1 Hidden Disabled Background43242B", 0)
+
+MainGui.SetFont("s9 w650 cEF2B2D", "Segoe UI")
+global Editor_GeneralTitle := MainGui.Add("Text", "x30 y215 w180 h20 Hidden", "GENERAL")
+MainGui.SetFont("s8 w600 cB79AA0", "Segoe UI")
+global Editor_MapLabel := MainGui.Add("Text", "x30 y242 w45 h22 Hidden 0x200", "MAP")
+global Editor_ModeLabel := MainGui.Add("Text", "x325 y242 w48 h22 Hidden 0x200", "MODE")
+global Editor_AbstractLabel := MainGui.Add("Text", "x565 y242 w82 h22 Hidden 0x200", "ABSTRACT")
+MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
+global Editor_MapCtrl := MainGui.Add("ComboBox", "x75 y240 w235 Hidden", EditorSupportedMaps)
+global Editor_ModeCtrl := MainGui.Add("ComboBox", "x375 y240 w175 Hidden", EditorSupportedModes)
+global Editor_AbstractCtrl := MainGui.Add("DropDownList", "x647 y240 w83 Hidden Choose1", ["Off", "Slot 1", "Slot 2", "Slot 3", "Slot 4", "Slot 5"])
+
+MainGui.SetFont("s9 w650 cEF2B2D", "Segoe UI")
+global Editor_HotbarTitle := MainGui.Add("Text", "x30 y275 w180 h20 Hidden", "TOWER HOTBAR")
+MainGui.SetFont("s8 w600 c987D83", "Segoe UI")
+global Editor_HotbarMode := MainGui.Add("Text", "x300 y276 w430 h18 Hidden Right", "RECORDED ORDER  /  NO REMAP")
+global Editor_Line2 := MainGui.Add("Progress", "x30 y297 w700 h1 Hidden Disabled Background43242B", 0)
+global EditorTowerLabels := []
+global EditorOriginalTowerCtrls := []
+global EditorTowerCtrls := []
+Loop 5 {
+    slotX := 105 + ((A_Index - 1) * 125)
+    MainGui.SetFont("s8 w600 cB79AA0", "Segoe UI")
+    slotLabel := MainGui.Add("Text", "x" slotX " y302 w117 h14 Hidden Center", "SLOT " A_Index)
+    MainGui.SetFont("s8 w500 cB79AA0", "Segoe UI")
+    originalCtrl := MainGui.Add("Text", "x" slotX " y317 w117 h23 Hidden Center +Border +0x100 0x200 Background170E10", "—")
+    MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
+    slotCtrl := MainGui.Add("ComboBox", "x" slotX " y346 w117 Hidden", SupportedTowerNames)
+    EditorTowerLabels.Push(slotLabel)
+    EditorOriginalTowerCtrls.Push(originalCtrl)
+    EditorTowerCtrls.Push(slotCtrl)
+}
+MainGui.SetFont("s8 w650 cB79AA0", "Segoe UI")
+global Editor_OriginalLabel := MainGui.Add("Text", "x30 y318 w66 h20 Hidden 0x200", "ORIGINAL")
+global Editor_EquippedLabel := MainGui.Add("Text", "x30 y347 w66 h20 Hidden 0x200", "EQUIPPED")
+MainGui.SetFont("s8 w400 c987D83", "Segoe UI")
+global Editor_HotbarHint := MainGui.Add("Text", "x30 y374 w700 h16 Hidden", "Drag an Original card onto another slot to swap Equipped positions; dropdowns can replace individual towers.")
+
+MainGui.SetFont("s9 w650 cEF2B2D", "Segoe UI")
+global Editor_ModifiersTitle := MainGui.Add("Text", "x30 y393 w180 h20 Hidden", "MODIFIERS")
+global Editor_Line3 := MainGui.Add("Progress", "x30 y413 w700 h1 Hidden Disabled Background43242B", 0)
+global EditorModifierCtrls := Map()
+MainGui.SetFont("s8 w400 cF5E9EC", "Segoe UI")
+for index, modifierName in EditorModifierNames {
+    modifierCol := Mod(index - 1, 5)
+    modifierRow := Floor((index - 1) / 5)
+    modifierCtrl := MainGui.Add("Checkbox", "x" (30 + modifierCol * 144) " y" (421 + modifierRow * 22) " w132 h19 Hidden", modifierName)
+    EditorModifierCtrls[modifierName] := modifierCtrl
+}
+
+global Editor_Line4 := MainGui.Add("Progress", "x30 y489 w700 h1 Hidden Disabled Background43242B", 0)
+MainGui.SetFont("s8 w400 cF5E9EC", "Segoe UI")
+global Editor_AutoSkipCtrl := MainGui.Add("Checkbox", "x30 y495 w115 h20 Hidden", "Auto Skip")
+global Editor_AdvancedSkipCtrl := MainGui.Add("Checkbox", "x155 y495 w155 h20 Hidden", "Advanced Wave Skip")
+MainGui.SetFont("s8 w600 cB79AA0", "Segoe UI")
+global Editor_AdvancedWavesLabel := MainGui.Add("Text", "x330 y495 w48 h20 Hidden 0x200", "WAVES")
+MainGui.SetFont("s8 w400 c000000", "Segoe UI")
+global Editor_AdvancedWavesCtrl := MainGui.Add("Edit", "x380 y493 w350 h22 Hidden Disabled", "")
+Editor_AutoSkipCtrl.OnEvent("Click", EditorAutoSkipModeChanged)
+Editor_AdvancedSkipCtrl.OnEvent("Click", EditorAutoSkipModeChanged)
+
+MainGui.SetFont("s8 w400 cF5E9EC", "Segoe UI")
+global Editor_AbilitySpamCtrl := MainGui.Add("Checkbox", "x30 y519 w125 h20 Hidden", "Ability Spam")
+global Editor_AutoChainCtrl := MainGui.Add("Checkbox", "x165 y519 w125 h20 Hidden", "Call of Arms")
+global Editor_AutoCaravanCtrl := MainGui.Add("Checkbox", "x300 y519 w140 h20 Hidden", "Support Caravan")
+global Editor_AutoDropCtrl := MainGui.Add("Checkbox", "x450 y519 w145 h20 Hidden", "Drop the Beat")
+
+MainGui.SetFont("s10 w500 cF5E9EC", "Segoe UI")
+global Editor_SaveCopyBtn := MainGui.Add("Text", "x30 y553 w225 h32 Hidden Center +Border 0x200 BackgroundEF2B2D", "Save Copy")
+global Editor_OverwriteBtn := MainGui.Add("Text", "x265 y553 w225 h32 Hidden Center +Border 0x200 Background120B0D", "Overwrite + Backup")
+global Editor_RenameBtn := MainGui.Add("Text", "x500 y553 w230 h32 Hidden Center +Border 0x200 Background120B0D", "Rename File")
+Editor_SaveCopyBtn.OnEvent("Click", EditorSaveCopy)
+Editor_OverwriteBtn.OnEvent("Click", EditorOverwrite)
+Editor_RenameBtn.OnEvent("Click", EditorRename)
+SetButtonRole(Editor_SaveCopyBtn, "Primary")
+SetButtonRole(Editor_OverwriteBtn)
+SetButtonRole(Editor_RenameBtn)
+HoverEffect_btns.Push(Editor_SaveCopyBtn)
+HoverEffect_btns.Push(Editor_OverwriteBtn)
+HoverEffect_btns.Push(Editor_RenameBtn)
+
+global EditorCtrls := [Editor_Kicker, Editor_Title, Editor_Subtitle, Editor_FileLabel, Editor_PathCtrl,
+    Editor_BrowseBtn, Editor_ReloadBtn, Editor_Status, Editor_Line1, Editor_GeneralTitle, Editor_MapLabel,
+    Editor_ModeLabel, Editor_AbstractLabel, Editor_MapCtrl, Editor_ModeCtrl, Editor_AbstractCtrl,
+    Editor_HotbarTitle, Editor_HotbarMode, Editor_Line2, Editor_OriginalLabel, Editor_EquippedLabel,
+    Editor_HotbarHint, Editor_ModifiersTitle, Editor_Line3, Editor_Line4,
+    Editor_AutoSkipCtrl, Editor_AdvancedSkipCtrl, Editor_AdvancedWavesLabel, Editor_AdvancedWavesCtrl,
+    Editor_AbilitySpamCtrl, Editor_AutoChainCtrl, Editor_AutoCaravanCtrl, Editor_AutoDropCtrl,
+    Editor_SaveCopyBtn, Editor_OverwriteBtn, Editor_RenameBtn]
+for ctrl in EditorTowerLabels
+    EditorCtrls.Push(ctrl)
+for ctrl in EditorOriginalTowerCtrls
+    EditorCtrls.Push(ctrl)
+for ctrl in EditorTowerCtrls
+    EditorCtrls.Push(ctrl), ctrl.OnEvent("Change", EditorHotbarChanged)
+for modifierName, ctrl in EditorModifierCtrls
+    EditorCtrls.Push(ctrl)
+
+; tab 9 - credits ===========================
 
 MainGui.SetFont("s8 w700 cEF2B2D", "Segoe UI")
 global Credits_Kicker := MainGui.Add("Text", "x30 y98 w640 Hidden Center", "KRONOX'S EDITION  /  CREDITS")
@@ -1573,24 +1772,25 @@ global CreditsCtrls := [Credits_Kicker, Credits_Title, Credits_Subtitle, Credits
     Credits_OriginalName, Credits_EditionName, Credits_OriginalText, Credits_EditionText,
     Credits_LicenseBG, Credits_LicenseLabel, Credits_LicenseText, Credits_Footnote]
 
-global Divider := MainGui.Add("Progress", "x0 y500 w700 h1 Hidden Background2D171C", 0)
-global FooterBg := MainGui.Add("Progress", "x0 y501 w700 h64 Disabled Hidden Background120B0D", 0)
+global Divider := MainGui.Add("Progress", "x0 y545 w" MainWindowWidth " h1 Hidden Background2D171C", 0)
+global FooterBg := MainGui.Add("Progress", "x0 y546 w" MainWindowWidth " h64 Disabled Hidden Background120B0D", 0)
 
-global version_text := MainGui.Add("Text", "x30 y520 BackgroundTrans Hidden", ver)
+global version_text := MainGui.Add("Text", "x30 y565 BackgroundTrans Hidden", ver)
 
-global githubImg := MainGui.Add("Picture", "x580 y520 w24 h-1 Hidden BackgroundTrans", "Resources\github.png")
+global githubImg := MainGui.Add("Picture", "x640 y565 w24 h-1 Hidden BackgroundTrans", "Resources\github.png")
 githubImg.OnEvent("Click", githubLink)
-global DiscordImg := MainGui.Add("Picture", "x611 y520 w24 h-1 Hidden BackgroundTrans", "Resources\discord.png")
+global DiscordImg := MainGui.Add("Picture", "x671 y565 w24 h-1 Hidden BackgroundTrans", "Resources\discord.png")
 DiscordImg.OnEvent("Click", DiscordLink)
-global YoutubeImg := MainGui.Add("Picture", "x642 y520 w24 h-1 Hidden BackgroundTrans", "Resources\youtube.png")
+global YoutubeImg := MainGui.Add("Picture", "x702 y565 w24 h-1 Hidden BackgroundTrans", "Resources\youtube.png")
 YoutubeImg.OnEvent("Click", YouTubeLink)
 
 MainGui.Title := "Ultimate Macro Kronox's Edition"
+CenterLegacyTabLayouts()
 ApplyDarkControlThemes(MainGui)
 ApplyDarkControlThemes(ChildGui)
 ApplyDarkWindowTheme(MainGui.Hwnd)
 ApplyDarkWindowTheme(ChildGui.Hwnd)
-MainGui.Show("w700 h565")
+MainGui.Show("w" MainWindowWidth " h" MainWindowHeight)
 
 if (AlwaysOnTop = 1) {
     MainGui.Opt("+AlwaysOnTop")
@@ -1610,6 +1810,8 @@ EnableStratRotation()
 SetTimer(Hoverwatchdog, 10)
 
 OnMessage(0x0201, WM_LBUTTONDOWN_Drag)
+OnMessage(0x0200, EditorHotbarDragMouseMove)
+OnMessage(0x0202, EditorHotbarDragMouseUp)
 
 RemoveInitialFocus() {
     if !WinActive("ahk_id " MainGui.Hwnd)
@@ -1876,6 +2078,57 @@ HideAllTabContent() {
     ChildGui.Hide()
 }
 
+CenterLegacyTabLayouts() {
+    static centered := false
+    global MainWindowWidth, FrameX, Tab2Ctrls, TAB3, StatsCtrls, CreditsCtrls
+    if (centered)
+        return
+    centered := true
+
+    offset := Round((MainWindowWidth - 700) / 2)
+    if (offset = 0)
+        return
+
+    FrameX += offset
+    controlGroups := [
+        [Tab1_Section1, Tab1_Line1, Tab1_Lbl1, Strategy1Ctrl, Tab1_Btn1, Tab1_Btn2,
+         Tab1_Lbl2, Strategy2Ctrl, Tab1_Btn3, Tab1_Btn4, RotateStrategiesCtrl, SwapAfterLbl,
+         SwapAmountCtrl, SwapUnitCtrl, AutoEquipCtrl, Tab1_Section2, Tab1_Line2, Tab1_Start, Tab1_Stop],
+        Tab2Ctrls,
+        TAB3,
+        [Tab4_Title, Tab4_Line1, Tab4_Lbl1, WebhookLinkCtrl, WebhookEnabledCtrl, Tab4_Line2,
+         SendCurrCtrl, DebugLogsCtrl, WebhookScreenshotsCtrl, WebhookTriumphScreenshotsCtrl,
+         WebhookSepatateTriumphScreenshotsCtrl, WebhookLinkCtrl2, Tab4_Info, Tab4_Btn1, Tab4_Btn2],
+        [Tab5_Section1, Tab5_Line1, Tab5_Lbl1, ChainKeyCtrl, Tab5_Lbl2, BeatKeyCtrl,
+         Tab5_Lbl3, CaravanKeyCtrl, Tab5_Lbl44, RaiseDeadKeyCtrl, Tab5_Lbl55, HologramKeyCtrl,
+         Tab5_Lbl56, RepoKeyCtrl, Tab5_Help11, Tab5_Lbl99, CancelPlacementKeyCtrl,
+         Tab5_LblUPG, UpgradeTowerGCtrl, Tab5_LblUPGBTM, UpgradeTowerGBCtrl,
+         Tab5_Section2, Tab5_Line2, UseUpgradeHCtrl, Tab5_Help6, UseRestartBtnCtrl, Tab5_Help4,
+         UsePlayAgainBtnCtrl, Tab5_Help5, CheckTheMapCtrl, Tab5_Help7, UseNumbersForHotbarCtrl,
+         CollectPlaytimeRewardsCtrl, DebugConsoleCtrl, PotatoModeCtrl, Tab1_Lbl3, TimeScaleModeCtrl,
+         MouseSpeedLbl, MouseSpeedTxt, MouseSpeedUpDown, MouseDelayLbl, MouseDelayTxt,
+         MouseDelayUpDown, KeyDelayLbl, KeyDelayTxt, KeyDelayUpDown, Tab5_Section3, Tab5_Line3,
+         PlcTowerTEXT, PlaceTowerKeyCtrl, UpgTowerTEXT, UpgradeTowerKeyCtrl, AlignCamTEXT,
+         AlignCameraKeyCtrl, DjTrackTEXT, ChangeDJTrackKeyCtrl, SellTowTEXT, SellTowerKeyCtrl,
+         DelRecTEXT, DeleteTowerRecordingKeyCtrl, RecInputsTEXT, RecordInputsKeyCtrl, HoloTEXT,
+         HoloKeyCtrl, RaiseDeadTEXT, UseRaiseDeadKeyCtrl, Tab5_Line4, Tab5_Lbl4, VipLinkCtrl,
+         UseVipServerCtrl, AlwaysOnTopCtrl, Tab5_Btn1],
+        [Tools_Section, Tools_Section_Line, Tools_Info, Auto_COA, Auto_Spin, Auto_Consum],
+        StatsCtrls,
+        CreditsCtrls
+    ]
+
+    for controls in controlGroups {
+        for ctrl in controls {
+            try {
+                ctrl.GetPos(&ctrlX, &ctrlY, &ctrlW, &ctrlH)
+                ctrl.Move(ctrlX + offset, ctrlY, ctrlW, ctrlH)
+            } catch Error {
+            }
+        }
+    }
+}
+
 ShowTabContent(tab) {
     global ChildGui
     if (tab = "Tab1") {
@@ -1886,12 +2139,7 @@ ShowTabContent(tab) {
         EnableStratRotation()
         ShowChildGui()
     } else if (tab = "Tab2") {
-        for ctrl in [Tab2_Title, Tab2_Line1, Tab2_Lbl1, RecMapsD, Tab2_Lbl2, RecDiffCtrl,
-                     Tab2_Lbl3, RecModifiersCtrl, Tab2_Info2, Tab2_Lbl4, RecTowersCtrl, Tab2_Info1,
-                     Tab2_Line2, Tab2_Line3, RecAutoChainCtrl, RecAutoCaravanCtrl, RecAutoDropCtrl,
-                     RecAutoSkipCtrl, RecAbilitySpamCtrl, RecAbstractSlotEnabledCtrl, RecAbstractSlotLabel, RecAbstractSlotCtrl,
-                     RecAbstractSlotInfo, Tab2_Info, RecMoveCtrl, DIRECTIONTEXTCtrl, RecMoveDirCtrl,
-                     Tab2_Txt4, RecMoveDurCtrl, Tab2_Btn1, Tab2_Btn2]
+        for ctrl in Tab2Ctrls
             ctrl.Visible := true
     } else if (tab = "Tab3") {
         for ctrl in TAB3
@@ -1961,6 +2209,11 @@ ShowTabContent(tab) {
         YoutubeImg.Visible := true
         githubImg.Visible := true
     } else if (tab = "Tab8") {
+        if (EditorStrategyPath = "" && Trim(Strategy1Ctrl.Text) != "" && FileExist(Strategy1Ctrl.Text))
+            EditorLoadStrategy(Strategy1Ctrl.Text)
+        for ctrl in EditorCtrls
+            ctrl.Visible := true
+    } else if (tab = "Tab9") {
         for ctrl in CreditsCtrls
             ctrl.Visible := true
         version_text.Visible := true
@@ -2484,6 +2737,148 @@ NormalizeAbstractTowerSlot(value) {
     return (slot >= 1 && slot <= 5) ? slot : 0
 }
 
+SplitTowerNames(towerText) {
+    towerList := []
+    for rawTower in StrSplit(towerText, ",") {
+        towerName := Trim(rawTower)
+        if (towerName != "")
+            towerList.Push(towerName)
+    }
+    return towerList
+}
+
+TowerListToText(towerList) {
+    towerText := ""
+    for index, towerName in towerList
+        towerText .= (index = 1 ? "" : ", ") Trim(towerName)
+    return towerText
+}
+
+NormalizeTowerIdentity(towerName) {
+    normalized := StrLower(RegExReplace(Trim(towerName), "\s+", " "))
+    if RegExMatch(normalized, "^golden\s+(.+)$", &goldenMatch)
+        return "g " goldenMatch[1]
+    return normalized
+}
+
+BuildTowerHotbarRemap(recordedTowerText, equippedTowerText) {
+    recordedTowers := SplitTowerNames(recordedTowerText)
+    equippedTowers := SplitTowerNames(equippedTowerText)
+    emptyMap := Map()
+
+    if (recordedTowers.Length = 0 || equippedTowers.Length = 0)
+        return {valid: false, changed: false, moveCount: 0, slots: emptyMap, summary: "", message: "Original and equipped hotbars cannot be empty."}
+    if (recordedTowers.Length != equippedTowers.Length)
+        return {valid: false, changed: false, moveCount: 0, slots: emptyMap, summary: "", message: "Hotbar swapping requires the exact same number of towers."}
+
+    usedEquippedSlots := Map()
+    slotMap := Map()
+    changed := false
+    summaryParts := []
+    for recordedSlot, recordedTower in recordedTowers {
+        identity := NormalizeTowerIdentity(recordedTower)
+        matchedSlot := 0
+        for equippedSlot, equippedTower in equippedTowers {
+            if (!usedEquippedSlots.Has(equippedSlot) && NormalizeTowerIdentity(equippedTower) = identity) {
+                matchedSlot := equippedSlot
+                break
+            }
+        }
+        if (matchedSlot = 0) {
+            return {
+                valid: false,
+                changed: false,
+                moveCount: 0,
+                slots: emptyMap,
+                summary: "",
+                message: "Hotbar swapping requires exactly the same towers. '" recordedTower "' is missing from Equipped."
+            }
+        }
+
+        usedEquippedSlots[matchedSlot] := true
+        slotMap[recordedSlot] := matchedSlot
+        if (matchedSlot != recordedSlot) {
+            changed := true
+            summaryParts.Push("S" recordedSlot ">S" matchedSlot " " recordedTower)
+        }
+    }
+
+    summary := ""
+    for index, part in summaryParts
+        summary .= (index = 1 ? "" : "  |  ") part
+    return {valid: true, changed: changed, moveCount: summaryParts.Length, slots: slotMap, summary: summary, message: ""}
+}
+
+ResolveStrategyHotbarSlot(recordedSlot) {
+    global StrategyHotbarSlotMap
+    slot := NormalizeAbstractTowerSlot(recordedSlot)
+    return (slot > 0 && StrategyHotbarSlotMap.Has(slot)) ? StrategyHotbarSlotMap[slot] : slot
+}
+
+CollectTowerSlotValues(towerControls) {
+    towerList := []
+    foundBlank := false
+    for index, towerCtrl in towerControls {
+        towerName := Trim(towerCtrl.Text)
+        if (towerName = "") {
+            foundBlank := true
+            continue
+        }
+        if (foundBlank) {
+            return {
+                ok: false,
+                value: "",
+                message: "Tower slots must be consecutive. Fill the earlier blank slot or clear the later slot."
+            }
+        }
+        towerList.Push(towerName)
+    }
+
+    if (towerList.Length = 0)
+        return {ok: false, value: "", message: "Choose or type at least one tower."}
+
+    towerText := ""
+    for index, towerName in towerList
+        towerText .= (index = 1 ? "" : ", ") towerName
+    return {ok: true, value: towerText, message: ""}
+}
+
+ParseAdvancedWaveSelection(waveText) {
+    waveText := Trim(waveText)
+    if (waveText = "")
+        return {ok: false, canonical: "", waves: Map(), message: "Enter at least one wave for Advanced Wave Skip."}
+
+    waveSet := Map()
+    canonicalParts := []
+    for rawPart in StrSplit(waveText, ",") {
+        part := Trim(rawPart)
+        if RegExMatch(part, "^(\d{1,3})$", &singleMatch) {
+            wave := Integer(singleMatch[1])
+            if (wave < 1)
+                return {ok: false, canonical: "", waves: Map(), message: "Wave numbers must be 1 or higher."}
+            waveSet[wave] := true
+            canonicalParts.Push(String(wave))
+        } else if RegExMatch(part, "^(\d{1,3})\s*-\s*(\d{1,3})$", &rangeMatch) {
+            firstWave := Integer(rangeMatch[1])
+            lastWave := Integer(rangeMatch[2])
+            if (firstWave < 1 || lastWave < firstWave)
+                return {ok: false, canonical: "", waves: Map(), message: "Invalid wave range '" part "'. Use a range such as 10-15."}
+            if (lastWave - firstWave > 200)
+                return {ok: false, canonical: "", waves: Map(), message: "Wave range '" part "' is too large."}
+            Loop lastWave - firstWave + 1
+                waveSet[firstWave + A_Index - 1] := true
+            canonicalParts.Push(firstWave "-" lastWave)
+        } else {
+            return {ok: false, canonical: "", waves: Map(), message: "Invalid wave entry '" part "'. Use commas and ranges, for example: 1, 3, 10-15."}
+        }
+    }
+
+    canonical := ""
+    for index, part in canonicalParts
+        canonical .= (index = 1 ? "" : ", ") part
+    return {ok: true, canonical: canonical, waves: waveSet, message: ""}
+}
+
 BuildAbstractRequiredTowers(towers, abstractSlot) {
     abstractSlot := NormalizeAbstractTowerSlot(abstractSlot)
     if (abstractSlot = 0)
@@ -2510,6 +2905,562 @@ BuildAbstractRequiredTowers(towers, abstractSlot) {
         result .= (index = 1 ? "" : ", ") towerName
 
     return {ok: true, value: result}
+}
+
+EditorBrowseStrategy(ctrl, *) {
+    global EditorStrategyPath, StratsDir, Strategy1Ctrl
+
+    targetDir := StratsDir
+    if (EditorStrategyPath != "" && FileExist(EditorStrategyPath)) {
+        SplitPath(EditorStrategyPath, , &targetDir)
+    } else if (Trim(Strategy1Ctrl.Text) != "" && FileExist(Strategy1Ctrl.Text)) {
+        SplitPath(Strategy1Ctrl.Text, , &targetDir)
+    }
+
+    selectedFile := FileSelect("3", targetDir, "Open strategy in the safe editor", "Strategy (*.strat)")
+    if (selectedFile != "")
+        EditorLoadStrategy(selectedFile)
+}
+
+EditorReloadStrategy(ctrl := 0, *) {
+    global EditorStrategyPath
+    if (EditorStrategyPath = "" || !FileExist(EditorStrategyPath)) {
+        EditorSetStatus("Nothing to reload. Browse to a strategy first.", true)
+        return
+    }
+    EditorLoadStrategy(EditorStrategyPath)
+}
+
+EditorLoadStrategy(path) {
+    global EditorStrategyPath, Editor_PathCtrl, Editor_Status, Editor_MapCtrl, Editor_ModeCtrl
+    global Editor_AbstractCtrl, EditorTowerCtrls, EditorOriginalTowerCtrls, EditorModifierCtrls, EditorModifierNames
+    global EditorRecordedTowerText
+    global Editor_AutoSkipCtrl, Editor_AdvancedSkipCtrl, Editor_AdvancedWavesCtrl
+    global Editor_AbilitySpamCtrl, Editor_AutoChainCtrl, Editor_AutoCaravanCtrl, Editor_AutoDropCtrl
+
+    if (path = "" || !FileExist(path)) {
+        EditorSetStatus("Strategy file not found.", true)
+        return false
+    }
+
+    try {
+        mapName := IniRead(path, "Settings", "map", "")
+        modeName := IniRead(path, "Settings", "difficulty", "")
+        towerText := IniRead(path, "Settings", "requiredTowers", "")
+        recordedTowerText := IniRead(path, "Settings", "recordedTowers", towerText)
+        if (Trim(recordedTowerText) = "")
+            recordedTowerText := towerText
+        modifierText := IniRead(path, "Settings", "modifiers", "")
+        abstractSlot := NormalizeAbstractTowerSlot(IniRead(path, "Settings", "abstractSlot", 0))
+
+        towerList := []
+        for rawTower in StrSplit(towerText, ",") {
+            towerName := Trim(rawTower)
+            if (towerName != "")
+                towerList.Push(towerName)
+        }
+        recordedTowerList := SplitTowerNames(recordedTowerText)
+
+        if (abstractSlot = 0) {
+            for index, towerName in towerList {
+                if (StrLower(towerName) = "abstract") {
+                    abstractSlot := index <= 5 ? index : 0
+                    break
+                }
+            }
+        }
+
+        Editor_MapCtrl.Text := mapName
+        Editor_ModeCtrl.Text := modeName
+        EditorRecordedTowerText := TowerListToText(recordedTowerList)
+        for index, originalCtrl in EditorOriginalTowerCtrls
+            originalCtrl.Value := index <= recordedTowerList.Length ? recordedTowerList[index] : "—"
+        EditorRefreshOriginalTowerStyles()
+        for index, towerCtrl in EditorTowerCtrls
+            towerCtrl.Value := index <= towerList.Length ? towerList[index] : ""
+        EditorHotbarChanged()
+
+        Editor_AbstractCtrl.Choose(abstractSlot + 1)
+
+        selectedModifiers := Map()
+        for rawModifier in StrSplit(modifierText, ",") {
+            modifierName := Trim(rawModifier)
+            if (modifierName != "")
+                selectedModifiers[StrLower(modifierName)] := true
+        }
+        for modifierName, modifierCtrl in EditorModifierCtrls
+            modifierCtrl.Value := selectedModifiers.Has(StrLower(modifierName)) ? 1 : 0
+
+        advancedSkipOn := EditorSettingIsOn(IniRead(path, "Settings", "advancedAutoSkip", "OFF"))
+        Editor_AutoSkipCtrl.Value := advancedSkipOn ? 0 : EditorSettingIsOn(IniRead(path, "Settings", "autoSkip", "OFF"))
+        Editor_AdvancedSkipCtrl.Value := advancedSkipOn ? 1 : 0
+        Editor_AdvancedWavesCtrl.Value := IniRead(path, "Settings", "advancedSkipWaves", "")
+        EditorAutoSkipModeChanged(advancedSkipOn ? Editor_AdvancedSkipCtrl : Editor_AutoSkipCtrl)
+        Editor_AbilitySpamCtrl.Value := EditorSettingIsOn(IniRead(path, "Settings", "abilitySpam", "OFF"))
+        Editor_AutoChainCtrl.Value := EditorSettingIsOn(IniRead(path, "Settings", "autoChain", "OFF"))
+        Editor_AutoCaravanCtrl.Value := EditorSettingIsOn(IniRead(path, "Settings", "autoCaravan", "OFF"))
+        Editor_AutoDropCtrl.Value := EditorSettingIsOn(IniRead(path, "Settings", "autoDropTheBeat", "OFF"))
+
+        EditorStrategyPath := path
+        Editor_PathCtrl.Value := path
+        stepCount := EditorCountSteps(path)
+        EditorSetStatus("Loaded " EditorFileName(path) "  |  " stepCount " recorded steps locked and preserved")
+        return true
+    } catch Error as err {
+        EditorSetStatus("Could not load strategy: " err.Message, true)
+        return false
+    }
+}
+
+EditorHotbarTryBeginDrag(hwnd) {
+    global EditorOriginalTowerCtrls, EditorHotbarDragSource, EditorHotbarDragTarget
+    global EditorHotbarDragStartX, EditorHotbarDragStartY, EditorHotbarDragMoved
+    global Editor_HotbarMode, Editor_HotbarHint
+
+    sourceSlot := 0
+    for slot, originalCtrl in EditorOriginalTowerCtrls {
+        if (originalCtrl.Hwnd = hwnd && originalCtrl.Visible) {
+            sourceSlot := slot
+            break
+        }
+    }
+    if (sourceSlot = 0)
+        return false
+
+    oldMouseMode := A_CoordModeMouse
+    CoordMode("Mouse", "Screen")
+    MouseGetPos(&mouseX, &mouseY)
+    CoordMode("Mouse", oldMouseMode)
+
+    EditorHotbarDragSource := sourceSlot
+    EditorHotbarDragTarget := sourceSlot
+    EditorHotbarDragStartX := mouseX
+    EditorHotbarDragStartY := mouseY
+    EditorHotbarDragMoved := false
+    DllCall("SetCapture", "Ptr", hwnd)
+    EditorRefreshOriginalTowerStyles(sourceSlot, sourceSlot)
+    Editor_HotbarMode.Value := "DRAG SLOT " sourceSlot "  /  CHOOSE A DESTINATION"
+    Editor_HotbarMode.SetFont("c" ThemeColor("Accent") " w700")
+    Editor_HotbarHint.Value := "Hold the mouse button and release over another Original slot to swap the two Equipped positions."
+    return true
+}
+
+EditorHotbarDragMouseMove(wParam, lParam, msg, hwnd) {
+    global EditorHotbarDragSource, EditorHotbarDragTarget, EditorHotbarDragStartX, EditorHotbarDragStartY
+    global EditorHotbarDragMoved, Editor_HotbarMode
+    if (EditorHotbarDragSource = 0)
+        return
+
+    oldMouseMode := A_CoordModeMouse
+    CoordMode("Mouse", "Screen")
+    MouseGetPos(&mouseX, &mouseY)
+    CoordMode("Mouse", oldMouseMode)
+
+    if (Abs(mouseX - EditorHotbarDragStartX) >= 4 || Abs(mouseY - EditorHotbarDragStartY) >= 4)
+        EditorHotbarDragMoved := true
+    if (!EditorHotbarDragMoved)
+        return 0
+
+    targetSlot := EditorHotbarSlotAtScreenPoint(mouseX, mouseY)
+    if (targetSlot != EditorHotbarDragTarget) {
+        EditorHotbarDragTarget := targetSlot
+        EditorRefreshOriginalTowerStyles(EditorHotbarDragSource, targetSlot)
+        Editor_HotbarMode.Value := targetSlot > 0
+            ? "RELEASE TO SWAP SLOT " EditorHotbarDragSource " WITH SLOT " targetSlot
+            : "DRAG BACK OVER AN ORIGINAL SLOT"
+    }
+    return 0
+}
+
+EditorHotbarDragMouseUp(wParam, lParam, msg, hwnd) {
+    global EditorHotbarDragSource, EditorHotbarDragTarget, EditorHotbarDragMoved, EditorTowerCtrls
+    if (EditorHotbarDragSource = 0)
+        return
+
+    oldMouseMode := A_CoordModeMouse
+    CoordMode("Mouse", "Screen")
+    MouseGetPos(&mouseX, &mouseY)
+    CoordMode("Mouse", oldMouseMode)
+    releaseSlot := EditorHotbarSlotAtScreenPoint(mouseX, mouseY)
+    if (releaseSlot > 0)
+        EditorHotbarDragTarget := releaseSlot
+
+    DllCall("ReleaseCapture")
+    sourceSlot := EditorHotbarDragSource
+    targetSlot := EditorHotbarDragTarget
+    didSwap := EditorHotbarDragMoved && targetSlot > 0 && targetSlot != sourceSlot
+
+    EditorHotbarDragSource := 0
+    EditorHotbarDragTarget := 0
+    EditorHotbarDragMoved := false
+    EditorRefreshOriginalTowerStyles()
+
+    if (didSwap) {
+        sourceTower := EditorTowerCtrls[sourceSlot].Text
+        targetTower := EditorTowerCtrls[targetSlot].Text
+        EditorTowerCtrls[sourceSlot].Text := targetTower
+        EditorTowerCtrls[targetSlot].Text := sourceTower
+        EditorHotbarChanged()
+        EditorSetStatus("Equipped hotbar swapped: slot " sourceSlot " and slot " targetSlot ". Save to keep the new order.")
+    } else {
+        EditorHotbarChanged()
+    }
+    return 0
+}
+
+EditorHotbarSlotAtScreenPoint(screenX, screenY) {
+    global MainGui, EditorOriginalTowerCtrls
+    try WinGetClientPos(&clientX, &clientY,,, "ahk_id " MainGui.Hwnd)
+    catch
+        return 0
+
+    localX := screenX - clientX
+    localY := screenY - clientY
+    for slot, originalCtrl in EditorOriginalTowerCtrls {
+        originalCtrl.GetPos(&ctrlX, &ctrlY, &ctrlW, &ctrlH)
+        if (localX >= ctrlX && localX <= ctrlX + ctrlW && localY >= ctrlY && localY <= ctrlY + ctrlH)
+            return slot
+    }
+    return 0
+}
+
+EditorRefreshOriginalTowerStyles(sourceSlot := 0, targetSlot := 0) {
+    global EditorOriginalTowerCtrls
+    for slot, originalCtrl in EditorOriginalTowerCtrls {
+        background := "170E10"
+        textColor := ThemeColor("TextSecondary")
+        if (slot = targetSlot && targetSlot != sourceSlot) {
+            background := ThemeColor("AccentDark")
+            textColor := ThemeColor("TextPrimary")
+        } else if (slot = sourceSlot) {
+            background := ThemeColor("AccentSubtle")
+            textColor := ThemeColor("AccentHover")
+        }
+        originalCtrl.Opt("Background" background)
+        originalCtrl.SetFont("c" textColor " w600")
+        originalCtrl.Redraw()
+    }
+}
+
+EditorHotbarChanged(*) {
+    global EditorRecordedTowerText, EditorTowerCtrls, Editor_HotbarMode, Editor_HotbarHint
+
+    equippedTowers := []
+    for towerCtrl in EditorTowerCtrls {
+        towerName := Trim(towerCtrl.Text)
+        if (towerName != "")
+            equippedTowers.Push(towerName)
+    }
+    remap := BuildTowerHotbarRemap(EditorRecordedTowerText, TowerListToText(equippedTowers))
+
+    if (remap.valid && remap.changed) {
+        Editor_HotbarMode.Value := "HOTBAR SWAP READY  /  " remap.moveCount " SLOT MOVES"
+        Editor_HotbarMode.SetFont("c" ThemeColor("Accent") " w700")
+        Editor_HotbarHint.Value := "Same tower set confirmed. Recorded placements will follow each tower to its Equipped slot."
+    } else if (remap.valid) {
+        Editor_HotbarMode.Value := "RECORDED ORDER  /  NO REMAP"
+        Editor_HotbarMode.SetFont("c" ThemeColor("TextMuted") " w600")
+        Editor_HotbarHint.Value := "Drag an Original card onto another slot to swap Equipped positions, or use a dropdown to replace a tower."
+    } else {
+        Editor_HotbarMode.Value := "CUSTOM TOWERS  /  FIXED SLOTS"
+        Editor_HotbarMode.SetFont("c" ThemeColor("Warning") " w700")
+        Editor_HotbarHint.Value := "A dropdown tower differs from Original, so swap mapping is off and recorded slot numbers stay fixed."
+    }
+}
+
+EditorAutoSkipModeChanged(changedCtrl, *) {
+    global Editor_AutoSkipCtrl, Editor_AdvancedSkipCtrl, Editor_AdvancedWavesCtrl
+
+    if (changedCtrl = Editor_AutoSkipCtrl && Editor_AutoSkipCtrl.Value)
+        Editor_AdvancedSkipCtrl.Value := 0
+    else if (changedCtrl = Editor_AdvancedSkipCtrl && Editor_AdvancedSkipCtrl.Value)
+        Editor_AutoSkipCtrl.Value := 0
+
+    Editor_AdvancedWavesCtrl.Enabled := Editor_AdvancedSkipCtrl.Value = 1
+}
+
+EditorSettingIsOn(value) {
+    normalized := StrLower(Trim(String(value)))
+    return normalized = "on" || normalized = "1" || normalized = "true" || normalized = "yes"
+}
+
+EditorFileName(path) {
+    SplitPath(path, &fileName)
+    return fileName
+}
+
+EditorReadStepsSection(path) {
+    text := FileRead(path)
+    markerPos := RegExMatch(text, "im)^\[Steps\]\s*$")
+    return markerPos ? SubStr(text, markerPos) : ""
+}
+
+EditorCountSteps(path) {
+    stepsText := EditorReadStepsSection(path)
+    if (stepsText = "")
+        return 0
+
+    count := 0
+    for line in StrSplit(stepsText, "`n", "`r") {
+        line := Trim(line)
+        if (line != "" && SubStr(line, 1, 1) != "[" && SubStr(line, 1, 1) != ";")
+            count++
+    }
+    return count
+}
+
+EditorSetStatus(message, isError := false) {
+    global Editor_Status
+    Editor_Status.Value := message
+    Editor_Status.SetFont("c" (isError ? ThemeColor("AccentHover") : ThemeColor("TextMuted")))
+}
+
+EditorCollectSettings() {
+    global EditorStrategyPath, Editor_MapCtrl, Editor_ModeCtrl, Editor_AbstractCtrl
+    global EditorTowerCtrls, EditorModifierCtrls, EditorModifierNames
+    global EditorRecordedTowerText
+    global Editor_AutoSkipCtrl, Editor_AdvancedSkipCtrl, Editor_AdvancedWavesCtrl
+    global Editor_AbilitySpamCtrl, Editor_AutoChainCtrl, Editor_AutoCaravanCtrl, Editor_AutoDropCtrl
+
+    if (EditorStrategyPath = "" || !FileExist(EditorStrategyPath))
+        return {ok: false, message: "Browse to a valid strategy before saving."}
+
+    mapName := Trim(Editor_MapCtrl.Text)
+    modeName := Trim(Editor_ModeCtrl.Text)
+    if (mapName = "" || modeName = "")
+        return {ok: false, message: "Map and mode cannot be blank."}
+
+    towers := []
+    foundBlank := false
+    for index, towerCtrl in EditorTowerCtrls {
+        towerName := Trim(towerCtrl.Text)
+        if (towerName = "") {
+            foundBlank := true
+            continue
+        }
+        if (foundBlank)
+            return {ok: false, message: "Hotbar slots must be consecutive. Fill the earlier blank slot or clear later slots."}
+        towers.Push(towerName)
+    }
+    if (towers.Length = 0)
+        return {ok: false, message: "Add at least one tower to the hotbar."}
+
+    abstractSlot := Editor_AbstractCtrl.Value - 1
+    for index, towerName in towers {
+        if (StrLower(towerName) = "abstract" && index != abstractSlot) {
+            return {ok: false, message: "Slot " index " still contains Abstract. Replace it with its real tower or select Slot " index " as the Abstract slot."}
+        }
+    }
+    if (abstractSlot > towers.Length)
+        return {ok: false, message: "The selected Abstract slot is blank. Add a tower entry through slot " abstractSlot "."}
+    if (abstractSlot > 0)
+        towers[abstractSlot] := "Abstract"
+
+    towerText := TowerListToText(towers)
+    recordedTowerText := Trim(EditorRecordedTowerText)
+    if (recordedTowerText = "")
+        recordedTowerText := towerText
+    hotbarRemap := BuildTowerHotbarRemap(recordedTowerText, towerText)
+    hotbarRemapEnabled := hotbarRemap.valid && hotbarRemap.changed
+
+    modifierText := ""
+    for modifierName in EditorModifierNames {
+        if (EditorModifierCtrls[modifierName].Value)
+            modifierText .= (modifierText = "" ? "" : ", ") modifierName
+    }
+
+    if (Editor_AutoSkipCtrl.Value && Editor_AdvancedSkipCtrl.Value)
+        return {ok: false, message: "Auto Skip and Advanced Wave Skip are mutually exclusive. Choose only one."}
+
+    advancedWaveText := ""
+    if (Editor_AdvancedSkipCtrl.Value) {
+        parsedWaves := ParseAdvancedWaveSelection(Editor_AdvancedWavesCtrl.Text)
+        if (!parsedWaves.ok)
+            return {ok: false, message: parsedWaves.message}
+        advancedWaveText := parsedWaves.canonical
+    }
+
+    return {
+        ok: true,
+        data: {
+            mapName: mapName,
+            modeName: modeName,
+            towers: towerText,
+            recordedTowers: recordedTowerText,
+            hotbarRemap: hotbarRemapEnabled ? "ON" : "OFF",
+            hotbarRemapSummary: hotbarRemapEnabled ? hotbarRemap.summary : "",
+            abstractSlot: abstractSlot,
+            modifiers: modifierText,
+            autoSkip: Editor_AutoSkipCtrl.Value ? "ON" : "OFF",
+            advancedAutoSkip: Editor_AdvancedSkipCtrl.Value ? "ON" : "OFF",
+            advancedSkipWaves: advancedWaveText,
+            abilitySpam: Editor_AbilitySpamCtrl.Value ? "ON" : "OFF",
+            autoChain: Editor_AutoChainCtrl.Value ? "ON" : "OFF",
+            autoCaravan: Editor_AutoCaravanCtrl.Value ? "ON" : "OFF",
+            autoDropTheBeat: Editor_AutoDropCtrl.Value ? "ON" : "OFF"
+        }
+    }
+}
+
+EditorWriteSettings(path, data) {
+    IniWrite(data.mapName, path, "Settings", "map")
+    IniWrite(data.modeName, path, "Settings", "difficulty")
+    IniWrite(data.towers, path, "Settings", "requiredTowers")
+    IniWrite(data.recordedTowers, path, "Settings", "recordedTowers")
+    IniWrite(data.hotbarRemap, path, "Settings", "hotbarRemap")
+    IniWrite(data.abstractSlot, path, "Settings", "abstractSlot")
+    IniWrite(data.modifiers, path, "Settings", "modifiers")
+    IniWrite(data.autoChain, path, "Settings", "autoChain")
+    IniWrite(data.autoCaravan, path, "Settings", "autoCaravan")
+    IniWrite(data.autoDropTheBeat, path, "Settings", "autoDropTheBeat")
+    IniWrite(data.autoSkip, path, "Settings", "autoSkip")
+    IniWrite(data.advancedAutoSkip, path, "Settings", "advancedAutoSkip")
+    IniWrite(data.advancedSkipWaves, path, "Settings", "advancedSkipWaves")
+    IniWrite(data.abilitySpam, path, "Settings", "abilitySpam")
+}
+
+EditorSaveCopy(ctrl, *) {
+    global EditorStrategyPath
+    collected := EditorCollectSettings()
+    if (!collected.ok) {
+        EditorSetStatus(collected.message, true)
+        return
+    }
+
+    SplitPath(EditorStrategyPath, , &sourceDir, , &sourceName)
+    suggestedPath := sourceDir "\" sourceName " - Edited.strat"
+    destination := FileSelect("S", suggestedPath, "Save edited strategy as a new file", "Strategy (*.strat)")
+    if (destination = "")
+        return
+    if !RegExMatch(destination, "i)\.strat$")
+        destination .= ".strat"
+    if FileExist(destination) {
+        EditorSetStatus("That file already exists. Choose another name or use Overwrite + Backup.", true)
+        return
+    }
+
+    stepsBefore := EditorReadStepsSection(EditorStrategyPath)
+    created := false
+    try {
+        FileCopy(EditorStrategyPath, destination, 0)
+        created := true
+        EditorWriteSettings(destination, collected.data)
+        if (EditorReadStepsSection(destination) != stepsBefore)
+            throw Error("Recorded Steps changed during save; the copy was rejected.")
+        EditorLoadStrategy(destination)
+        remapNote := collected.data.hotbarRemap = "ON" ? "  |  hotbar swap active" : ""
+        EditorSetStatus("Saved new copy: " EditorFileName(destination) "  |  recorded Steps verified" remapNote)
+    } catch Error as err {
+        if (created && FileExist(destination))
+            try FileDelete(destination)
+        EditorSetStatus("Save Copy failed: " err.Message, true)
+    }
+}
+
+EditorOverwrite(ctrl, *) {
+    global EditorStrategyPath, RunningStrategy, Recording
+    if (RunningStrategy || Recording) {
+        EditorSetStatus("Overwrite is locked while the macro is running or recording. Use Save Copy instead.", true)
+        return
+    }
+
+    collected := EditorCollectSettings()
+    if (!collected.ok) {
+        EditorSetStatus(collected.message, true)
+        return
+    }
+    if (ModernMsgBox("Overwrite strategy?", "This will update only [Settings] in:`n" EditorFileName(EditorStrategyPath) "`n`nA timestamped backup will be created first. Recorded Steps remain locked.", "YES|NO", "WARNING") != "YES")
+        return
+
+    stepsBefore := EditorReadStepsSection(EditorStrategyPath)
+    backupPath := EditorCreateBackupPath(EditorStrategyPath)
+    backupCreated := false
+    try {
+        FileCopy(EditorStrategyPath, backupPath, 0)
+        backupCreated := true
+        EditorWriteSettings(EditorStrategyPath, collected.data)
+        if (EditorReadStepsSection(EditorStrategyPath) != stepsBefore)
+            throw Error("Recorded Steps changed during save.")
+        EditorLoadStrategy(EditorStrategyPath)
+        remapNote := collected.data.hotbarRemap = "ON" ? "  |  hotbar swap active" : ""
+        EditorSetStatus("Overwritten safely  |  backup: " EditorFileName(backupPath) "  |  Steps verified" remapNote)
+    } catch Error as err {
+        if (backupCreated && FileExist(backupPath))
+            try FileCopy(backupPath, EditorStrategyPath, 1)
+        EditorSetStatus("Overwrite failed; original restored from backup: " err.Message, true)
+    }
+}
+
+EditorCreateBackupPath(path) {
+    SplitPath(path, , &parentDir, , &nameNoExt)
+    timestamp := FormatTime(, "yyyyMMdd-HHmmss")
+    ; Keep backups out of the community strategy list, which scans only *.strat.
+    backupPath := parentDir "\" nameNoExt ".backup-" timestamp ".strat.bak"
+    suffix := 2
+    while FileExist(backupPath) {
+        backupPath := parentDir "\" nameNoExt ".backup-" timestamp "-" suffix ".strat.bak"
+        suffix++
+    }
+    return backupPath
+}
+
+EditorRename(ctrl, *) {
+    global EditorStrategyPath, RunningStrategy, Recording
+    if (EditorStrategyPath = "" || !FileExist(EditorStrategyPath)) {
+        EditorSetStatus("Browse to a valid strategy before renaming.", true)
+        return
+    }
+    if (RunningStrategy || Recording) {
+        EditorSetStatus("Rename is locked while the macro is running or recording.", true)
+        return
+    }
+
+    SplitPath(EditorStrategyPath, , &parentDir, , &nameNoExt)
+    result := InputBox("New file name (the recorded strategy content will not change):", "Rename strategy", "w420 h140", nameNoExt)
+    if (result.Result != "OK")
+        return
+
+    newName := Trim(result.Value)
+    if (newName = "" || RegExMatch(newName, '[<>:"/\\|?*]')) {
+        EditorSetStatus("The file name is empty or contains an invalid Windows character.", true)
+        return
+    }
+    if !RegExMatch(newName, "i)\.strat$")
+        newName .= ".strat"
+
+    destination := parentDir "\" newName
+    if (StrLower(destination) = StrLower(EditorStrategyPath)) {
+        EditorSetStatus("The strategy already has that name.")
+        return
+    }
+    if FileExist(destination) {
+        EditorSetStatus("A strategy with that name already exists.", true)
+        return
+    }
+
+    oldPath := EditorStrategyPath
+    try {
+        FileMove(oldPath, destination, 0)
+        EditorUpdateStrategyReferences(oldPath, destination)
+        EditorLoadStrategy(destination)
+        EditorSetStatus("Renamed to " EditorFileName(destination) "  |  file content unchanged")
+    } catch Error as err {
+        EditorSetStatus("Rename failed: " err.Message, true)
+    }
+}
+
+EditorUpdateStrategyReferences(oldPath, newPath) {
+    global Strategy1Ctrl, Strategy2Ctrl, Strategy1Path, Strategy2Path, SettingsFile
+    if (StrLower(Trim(Strategy1Ctrl.Text)) = StrLower(oldPath)) {
+        Strategy1Ctrl.Value := newPath
+        Strategy1Path := newPath
+        IniWrite(newPath, SettingsFile, "Options", "Strategy1")
+    }
+    if (StrLower(Trim(Strategy2Ctrl.Text)) = StrLower(oldPath)) {
+        Strategy2Ctrl.Value := newPath
+        Strategy2Path := newPath
+        IniWrite(newPath, SettingsFile, "Options", "Strategy2")
+    }
 }
 
 SelectStrat1(ctrl, *) {
@@ -2730,20 +3681,26 @@ StartRecording(ctrl, *) {
     global Recording, gamemap, difficulty, requiredTowers, modifiers, autoChain, autoCaravan
     global autoDropTheBeat, AutoSkip, AbilitySpam, MoveEnabled, MoveDirection, MoveDuration
     global Commander, RecordedSteps, Towers, MacroRecording, GuiTitleCtrl, AbstractTowerSlot
-    global Tab2_Btn1, Tab2_Btn2, HoverEffect_btns
+    global Tab2_Btn1, Tab2_Btn2, HoverEffect_btns, RecTowerCtrls
 
     if (Recording)
         return
 
     v := MainGui.Submit(false)
 
-    if (!v.RecMaps or !v.RecDifficulty or !v.RecRequiredTowers) {
+    if (!v.RecMaps or !v.RecDifficulty) {
         MsgBox("Failed to start recording!`nMake sure you have entered the towers, the map, and the difficulty, then try again.", "Error", 0x1010)
         return
     }
 
+    towerSlots := CollectTowerSlotValues(RecTowerCtrls)
+    if (!towerSlots.ok) {
+        MsgBox(towerSlots.message, "Tower Hotbar", 0x1030)
+        return
+    }
+
     selectedAbstractSlot := v.RecAbstractSlotEnabled ? NormalizeAbstractTowerSlot(v.RecAbstractSlot) : 0
-    abstractTowerList := BuildAbstractRequiredTowers(v.RecRequiredTowers, selectedAbstractSlot)
+    abstractTowerList := BuildAbstractRequiredTowers(towerSlots.value, selectedAbstractSlot)
     if (!abstractTowerList.ok) {
         MsgBox(abstractTowerList.message, "Abstract XP tower", 0x1030)
         return
@@ -4250,6 +5207,8 @@ HelpCheckTheMap(*) {
 LoadStrategyFile(file) {
     global Towers, RecordedSteps, gamemap, difficulty, requiredTowers, autoChain, autoCaravan
     global autoDropTheBeat, AutoSkip, AutoSkipStopWave, AbilitySpam, MoveEnabled, MoveDirection, MoveDuration
+    global AdvancedAutoSkip, AdvancedSkipWaves, AdvancedSkipWaveSet
+    global StrategyHotbarSlotMap, StrategyHotbarRemapSummary
     global modifiers, Commander, StrategyWidth, StrategyHeight
     global CloneFailurePolicy, EngineerCloneMaxAttempts
     global AbstractTowerSlot
@@ -4261,11 +5220,38 @@ LoadStrategyFile(file) {
     gamemap := IniRead(file, "Settings", "map", "")
     difficulty := IniRead(file, "Settings", "difficulty", "")
     requiredTowers  := IniRead(file, "Settings", "requiredTowers",  "")
+    recordedTowersSetting := IniRead(file, "Settings", "recordedTowers", requiredTowers)
+    StrategyHotbarSlotMap := Map()
+    StrategyHotbarRemapSummary := ""
+    if EditorSettingIsOn(IniRead(file, "Settings", "hotbarRemap", "OFF")) {
+        hotbarRemap := BuildTowerHotbarRemap(recordedTowersSetting, requiredTowers)
+        if (hotbarRemap.valid && hotbarRemap.changed) {
+            StrategyHotbarSlotMap := hotbarRemap.slots
+            StrategyHotbarRemapSummary := hotbarRemap.summary
+        } else if (!hotbarRemap.valid) {
+            LogToConsole("Hotbar swap disabled: " hotbarRemap.message, true)
+        }
+    }
     AbstractTowerSlot := NormalizeAbstractTowerSlot(IniRead(file, "Settings", "abstractSlot", "0"))
     autoChain := IniRead(file, "Settings", "autoChain", "OFF")
     autoCaravan := IniRead(file, "Settings", "autoCaravan", "OFF")
     autoDropTheBeat := IniRead(file, "Settings", "autoDropTheBeat", "OFF")
     AutoSkip := IniRead(file, "Settings", "autoSkip", "ON")
+    AdvancedAutoSkip := EditorSettingIsOn(IniRead(file, "Settings", "advancedAutoSkip", "OFF")) ? "ON" : "OFF"
+    AdvancedSkipWaves := IniRead(file, "Settings", "advancedSkipWaves", "")
+    AdvancedSkipWaveSet := Map()
+    if (AdvancedAutoSkip = "ON") {
+        parsedAdvancedWaves := ParseAdvancedWaveSelection(AdvancedSkipWaves)
+        if (parsedAdvancedWaves.ok) {
+            AdvancedSkipWaves := parsedAdvancedWaves.canonical
+            AdvancedSkipWaveSet := parsedAdvancedWaves.waves
+            ; Advanced mode owns the skip button and must never run beside normal Auto Skip.
+            AutoSkip := "OFF"
+        } else {
+            AdvancedAutoSkip := "OFF"
+            LogToConsole("Advanced Wave Skip disabled: " parsedAdvancedWaves.message, true)
+        }
+    }
     autoSkipStopSetting := IniRead(file, "Settings", "autoSkipStopWave", "0")
     AutoSkipStopWave := IsNumber(autoSkipStopSetting) ? Max(0, Integer(autoSkipStopSetting)) : 0
     AbilitySpam := IniRead(file, "Settings", "abilitySpam", "ON")
@@ -4332,6 +5318,7 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
     global SettingsFile, requiredTowers, modifiers, LastOpenedTowerID
     global LastSkipCheck, SKIP_CHECK_INTERVAL, AutorunStartTime, StateFile
     global WebhookEnabled, CurrentStratStartTime, CurrentRunCount, gamemap, AbstractTowerSlot
+    global StrategyHotbarRemapSummary
 
     if (RunningStrategy != true)
         return
@@ -4376,6 +5363,12 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
     LogToConsole("Required Towers: " requiredTowers)
     if (AbstractTowerSlot > 0)
         LogToConsole("Abstract XP tower: hotbar slot " AbstractTowerSlot " (Auto Equip protected)")
+    if (StrategyHotbarRemapSummary != "")
+        LogToConsole("Hotbar swap: " StrategyHotbarRemapSummary)
+    if (AdvancedAutoSkip = "ON")
+        LogToConsole("Advanced Wave Skip: " AdvancedSkipWaves)
+    else
+        LogToConsole("Auto Skip: " AutoSkip)
     if (modifiers != "")
         LogToConsole("Modifiers: " modifiers)
 
@@ -4437,13 +5430,14 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
 PlayStrategy() {
     global canUseAbility, MultiplayerEnabled, StateFile
     global CloneFailurePolicy, EngineerCloneMaxAttempts
-    global AutoSkipSuccessfulCount, AutoSkipLastDetectedWave, AutoSkipBlockLogged
+    global AutoSkipSuccessfulCount, AutoSkipLastDetectedWave, AutoSkipBlockLogged, AdvancedLastSkippedWave
 
     BeginTrackedRun()
     IniWrite(A_TickCount, StateFile, "State", "TimeWhenStartedPlaying")
     AutoSkipSuccessfulCount := 0
     AutoSkipLastDetectedWave := 0
     AutoSkipBlockLogged := false
+    AdvancedLastSkippedWave := 0
     SetTimer(UseAbilities, 750)
     if (MultiplayerEnabled) {
         SetTimer(checkCondition, 15000)
@@ -4536,7 +5530,7 @@ ExecuteStep(step) {
     if (step = "")
         return
     if RegExMatch(step, "i)SpawnTower\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d)\s*,\s*(.*?)\s*\)", &m) {
-        SpawnTower(m[1], m[2], m[3], Trim(m[4]))
+        SpawnTower(m[1], m[2], ResolveStrategyHotbarSlot(m[3]), Trim(m[4]))
         return
     }
     if RegExMatch(step, "i)UpgradeTower\s*\(\s*([^,]+?)\s*(?:,\s*(false|true)\s*)?(?:,\s*(\d+)\s*)?(?:,\s*(\d+)\s*)?(?:,\s*(\d+)\s*)?\s*\)", &m) {
@@ -6630,6 +7624,7 @@ CheckPopups(*) {
 
 UseAbilities(*) {
     global ChainKey, BeatKey, CaravanKey, CancelPlacementKey, TimeScaleMultiplier, AutoSkip, AbilitySpam
+    global AdvancedAutoSkip
     global AutoSkipSuccessfulCount
     global autoChain, autoCaravan, autoDropTheBeat, Commander, unfocusX, unfocusY, canUseAbility
     global LastOpenedTowerID, Towers, TimescaleActive, needtocheckTowerUI
@@ -6652,7 +7647,7 @@ UseAbilities(*) {
         chainInterval := 10
     }
 
-    if (AutoSkip = "ON") {
+    if (AutoSkip = "ON" || AdvancedAutoSkip = "ON") {
         res := AdvImageSearch("Resources/Skip.png", Round(A_ScreenWidth * 0.3), 0, Round(A_ScreenWidth * 0.7), Round(A_ScreenHeight * 0.35), 0.5, 1.5)
         if (res.status = "success" && res.score >= 0.65) {
             Sleep(200)
@@ -6766,6 +7761,21 @@ UseAbilities(*) {
 ShouldAutoSkipWave() {
     global AutoSkipStopWave, AutoSkipSuccessfulCount
     global AutoSkipLastDetectedWave, AutoSkipBlockLogged
+    global AdvancedAutoSkip, AdvancedSkipWaveSet, AdvancedLastSkippedWave
+
+    if (AdvancedAutoSkip = "ON") {
+        detectedWave := DetectCurrentWaveNumber()
+        if (detectedWave <= 0 || !AdvancedSkipWaveSet.Has(detectedWave))
+            return false
+
+        ; The timer checks several times per wave. Allow each selected wave only once.
+        if (AdvancedLastSkippedWave = detectedWave)
+            return false
+
+        AdvancedLastSkippedWave := detectedWave
+        LogToConsole("Advanced Wave Skip matched wave " detectedWave ".")
+        return true
+    }
 
     if (AutoSkipStopWave <= 0)
         return true
@@ -7194,7 +8204,7 @@ UpdateOverlay() {
     }
 
     pBrushTextOverlay := Gdip_BrushCreateSolid(textColor)
-    pBrushBgOverlay  := Gdip_BrushCreateSolid(0xAA000000)
+    pBrushBgOverlay  := Gdip_BrushCreateSolid(0xE80F0D0E)
     pBrushStatsBg := Gdip_BrushCreateSolid(0xE0180E11)
     pBrushStatsAccent := Gdip_BrushCreateSolid(0xFFEF2B2D)
 
