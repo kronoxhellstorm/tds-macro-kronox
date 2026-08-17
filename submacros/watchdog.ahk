@@ -21,6 +21,7 @@ StateFile := A_AppData "\Ultimate_Macro\state.ini"
 OverallStatsFile := A_AppData "\Ultimate_Macro\overall_stats.ini"
 StatsHistoryFile := A_AppData "\Ultimate_Macro\stats_history.csv"
 RunLedgerFile := A_AppData "\Ultimate_Macro\run_ledger.csv"
+RuntimeLogDir := A_AppData "\Ultimate_Macro\Logs"
 
 global WebhookLink := IniRead(SettingsFile, "Webhook", "Link", "")
 tempWebhook := IniRead(SettingsFile, "Webhook", "Enabled", "OFF")
@@ -50,6 +51,11 @@ if (A_Args.Length < 1) {
 }
 
 MainPID := A_Args[1]
+
+if !DirExist(RuntimeLogDir)
+    DirCreate(RuntimeLogDir)
+OnError(HandleWatchdogError)
+WriteRuntimeLog("WATCHDOG", "Watchdog started for main PID " MainPID ".")
 
 if (WebhookEnabled && WebhookLink != "" && WebhookScreenshots = "1") {
     screenshotDelay := Random(25000, 300000)
@@ -83,11 +89,22 @@ Loop {
         DetectHiddenWindows(false) 
     }
 
+    if (Mod(loopCounter, 5) == 0) {
+        stalledPhase := GetStalledMainPhase()
+        if (stalledPhase != "") {
+            if (WebhookEnabled && WebhookLink != "") {
+                SendScreenshot(, "Macro stalled during " stalledPhase "; recovering")
+            }
+            RestartMain("stalled-phase:" stalledPhase)
+            return
+        }
+    }
+
     if WinExist("Roblox Crash") {
         if (WebhookEnabled && WebhookLink != "") {
             SendScreenshot(,"Roblox has crashed!")
         }
-        RestartMain()
+        RestartMain("roblox-crash-window")
         return
     }
 
@@ -95,7 +112,7 @@ Loop {
         if (WebhookEnabled && WebhookLink != "") {
             SendScreenshot(,"Roblox is not running!")
         }
-        RestartMain()
+        RestartMain("roblox-window-missing")
         return
     }
 
@@ -111,14 +128,14 @@ Loop {
                 if (WebhookEnabled && WebhookLink != "") {
                     SendScreenshot(, "Disconnected, rejoining")
                 }
-                RestartMain()
+                RestartMain("disconnect-dialog-primary")
                 ExitApp()
             } else if ImageSearch(&FoundX, &FoundY, 0, 0, sw, sh, "*26 Resources/disconnected2.png") {
                 CoordMode("Pixel", "Client")
                 if (WebhookEnabled && WebhookLink != "") {
                     SendScreenshot(, "Disconnected, rejoining")
                 }
-                RestartMain()
+                RestartMain("disconnect-dialog-secondary")
                 ExitApp()
             }
         } catch Error as err {
@@ -135,8 +152,9 @@ Loop {
         if (resTriumph1.status == "success" && resTriumph1.score > 0.7) {
             CloseMain()
             Sleep 1300
-            SendInfo("Triumph", "triumph-title")
-            RestartMain()
+            resultStatus := SendInfo("Triumph", "triumph-title")
+            if (resultStatus != "duplicate")
+                RestartMain("result-triumph-title")
             ExitApp()
         }
     } else {
@@ -147,8 +165,9 @@ Loop {
         if (resTriumph2.status == "success" && resTriumph2.score > 0.7) {
             CloseMain()
             Sleep 1300
-            SendInfo("Triumph", "play-again-button")
-            RestartMain()
+            resultStatus := SendInfo("Triumph", "play-again-button")
+            if (resultStatus != "duplicate")
+                RestartMain("result-play-again-button")
             ExitApp()
         }
         
@@ -168,8 +187,10 @@ Loop {
         if (lossByTitle || lossByRestart) {
             CloseMain()
             Sleep 1300
-            SendInfo("Loss", lossByTitle ? "you-lost-title" : "restart-button")
-            RestartMain()
+            detection := lossByTitle ? "you-lost-title" : "restart-button"
+            resultStatus := SendInfo("Loss", detection)
+            if (resultStatus != "duplicate")
+                RestartMain("result-" detection)
             ExitApp()
         }
     }
@@ -188,6 +209,54 @@ Loop {
         }
     }
     Sleep(300)
+}
+
+WriteRuntimeLog(source, text, level := "INFO") {
+    global RuntimeLogDir
+
+    try {
+        if !DirExist(RuntimeLogDir)
+            DirCreate(RuntimeLogDir)
+
+        cleanText := StrReplace(String(text), "`r", "")
+        cleanText := StrReplace(cleanText, "`n", " | ")
+        logPath := RuntimeLogDir "\macro-" FormatTime(, "yyyy-MM-dd") ".log"
+        line := FormatTime(, "yyyy-MM-dd HH:mm:ss") " [" level "] [" source "] " cleanText "`n"
+        FileAppend(line, logPath, "UTF-8")
+    }
+}
+
+HandleWatchdogError(err, mode) {
+    message := "Unhandled watchdog error"
+    try message := err.Message
+    location := ""
+    try location := err.File (err.Line ? ":" err.Line : "")
+    try WriteRuntimeLog("WATCHDOG", message (location != "" ? " at " location : "") " [mode " mode "]", "ERROR")
+    return false
+}
+
+GetStalledMainPhase() {
+    global StateFile, MainPID
+
+    ownerPid := IniRead(StateFile, "Health", "OwnerPID", "")
+    if (String(ownerPid) != String(MainPID))
+        return ""
+
+    timeoutMs := Integer(IniRead(StateFile, "Health", "TimeoutMs", 0))
+    startedTick := Integer(IniRead(StateFile, "Health", "PhaseStartedTick", 0))
+    if (timeoutMs <= 0 || startedTick <= 0 || A_TickCount < startedTick)
+        return ""
+
+    ; Main enforces its own deadline. This ten-second grace makes the watchdog
+    ; the independent fallback when the main thread is hung or image search fails.
+    elapsed := A_TickCount - startedTick
+    if (elapsed <= timeoutMs + 10000)
+        return ""
+
+    phase := IniRead(StateFile, "Health", "Phase", "unknown")
+    detail := IniRead(StateFile, "Health", "Detail", "")
+    WriteRuntimeLog("WATCHDOG", "Stalled phase detected: " phase " after " Round(elapsed / 1000) " seconds" (detail != "" ? " (" detail ")" : "") ".", "WARN")
+    return phase
 }
 
 sX(baseX, Width := 1920) {
@@ -231,8 +300,12 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     strategyFile := IniRead(StateFile, "State", "Strategy", "")
     activeRunId := IniRead(StateFile, "State", "ActiveRunId", "")
     lastCompletedRunId := IniRead(StateFile, "State", "LastCompletedRunId", "")
-    if (activeRunId != "" && activeRunId = lastCompletedRunId)
-        return
+    if (activeRunId != "" && activeRunId = lastCompletedRunId) {
+        WriteRuntimeLog("WATCHDOG", "Skipped duplicate result for completed run " activeRunId ".", "WARN")
+        if (usingSeparateWebhook)
+            WebhookLink := originalWebhookLink
+        return "duplicate"
+    }
     activeStrategyName := IniRead(StateFile, "State", "ActiveStrategyName", "")
     activeStrategyFingerprint := IniRead(StateFile, "State", "ActiveStrategyFingerprint", "legacy")
     activeStrategyDisplay := IniRead(StateFile, "State", "ActiveStrategyDisplay", "")
@@ -277,7 +350,21 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
         timeCompleted .= seconds "s"
     } else {
         timeCompleted := "Failed"
-        return
+        WriteRuntimeLog("WATCHDOG", "Result screen was detected without an active run timer; result was not recorded.", "WARN")
+        if (usingSeparateWebhook)
+            WebhookLink := originalWebhookLink
+        return "failed"
+    }
+
+    if (activeRunId = "")
+        activeRunId := "legacy-" timeCompleted_T
+
+    claimStatus := TryClaimRunResult(activeRunId, timeCompleted_T, matchResult)
+    if (claimStatus != "claimed") {
+        WriteRuntimeLog("WATCHDOG", (claimStatus = "duplicate" ? "Another watchdog already claimed this " matchResult " result; duplicate processing stopped." : "The " matchResult " result could not be claimed safely; restarting without recording it."), claimStatus = "duplicate" ? "WARN" : "ERROR")
+        if (usingSeparateWebhook)
+            WebhookLink := originalWebhookLink
+        return claimStatus
     }
 
     getRobloxPos(&pX, &pY, &w, &h)
@@ -464,8 +551,7 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     IniWrite(matchResult, StateFile, "State", "LastResult")
     IniWrite(detectionSource, StateFile, "State", "LastResultDetection")
     IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "State", "LastResultAt")
-    if (activeRunId != "")
-        IniWrite(activeRunId, StateFile, "State", "LastCompletedRunId")
+    IniWrite(activeRunId, StateFile, "State", "LastCompletedRunId")
 
     ; Clear the run marker only after all local counters are safely persisted.
     ; If OCR or file work fails before here, the result can still be retried.
@@ -474,6 +560,8 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
         "ActiveStrategyName", "ActiveStrategyFingerprint", "ActiveStrategyDisplay", "ActiveMap",
         "ActiveMode", "ActiveModifiers"]
         try IniDelete(StateFile, "State", key)
+    try IniDelete(StateFile, "State", "ResultClaimedRunId")
+    try IniDelete(StateFile, "State", "ResultClaimedAt")
 
     autorunStart := IniRead(StateFile, "State", "StartTime", 0)
     coinsPerHour := 0, gemsPerHour := 0, expPerHour := 0
@@ -534,6 +622,9 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
 
     if (usingSeparateWebhook)
         WebhookLink := originalWebhookLink
+
+    WriteRuntimeLog("WATCHDOG", "Recorded " matchResult " for run " (activeRunId != "" ? activeRunId : "legacy") " via " detectionSource ".")
+    return "recorded"
 }
 
 UpdateBreakdownStats(file, kind, displayName, matchResult, coinVal, gemVal, expVal, timeInSeconds) {
@@ -576,6 +667,44 @@ SanitizeStatsSectionName(name) {
     cleanName := RegExReplace(Trim(name), "[^A-Za-z0-9 _-]", "_")
     cleanName := RegExReplace(cleanName, "\s+", "_")
     return (cleanName != "") ? cleanName : "Unknown"
+}
+
+TryClaimRunResult(runId, startedTick, matchResult) {
+    global StateFile
+
+    mutex := DllCall("Kernel32\CreateMutex", "Ptr", 0, "Int", false, "Str", "Local\UltimateMacroKronoxResultWriter", "Ptr")
+    if !mutex {
+        WriteRuntimeLog("WATCHDOG", "Could not create the result-writer mutex.", "ERROR")
+        return "failed"
+    }
+
+    waitResult := DllCall("Kernel32\WaitForSingleObject", "Ptr", mutex, "UInt", 5000, "UInt")
+    if (waitResult != 0 && waitResult != 0x80) {
+        DllCall("Kernel32\CloseHandle", "Ptr", mutex)
+        WriteRuntimeLog("WATCHDOG", "Timed out waiting for the result-writer mutex.", "ERROR")
+        return "failed"
+    }
+
+    try {
+        currentActiveRunId := IniRead(StateFile, "State", "ActiveRunId", "")
+        lastCompletedRunId := IniRead(StateFile, "State", "LastCompletedRunId", "")
+        claimedRunId := IniRead(StateFile, "State", "ResultClaimedRunId", "")
+
+        if (lastCompletedRunId = runId || claimedRunId = runId)
+            return "duplicate"
+
+        isLegacyRun := (SubStr(runId, 1, 7) = "legacy-")
+        if (!isLegacyRun && currentActiveRunId != runId)
+            return "duplicate"
+
+        IniWrite(runId, StateFile, "State", "ResultClaimedRunId")
+        IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "State", "ResultClaimedAt")
+        WriteRuntimeLog("WATCHDOG", "Claimed " matchResult " result for run " runId " (start tick " startedTick ").")
+        return "claimed"
+    } finally {
+        DllCall("Kernel32\ReleaseMutex", "Ptr", mutex)
+        DllCall("Kernel32\CloseHandle", "Ptr", mutex)
+    }
 }
 
 AppendStatsHistory(file, matchResult, detectionSource, mapName, modeName, timeInSeconds, coinVal, gemVal, expVal) {
@@ -786,7 +915,8 @@ CreateFormData(&retData, &contentType, fields) {
 
 CloseMain() {
     global MainPID, SettingsFile
-    
+
+    WriteRuntimeLog("WATCHDOG", "Closing main PID " MainPID " for result processing.")
     try ProcessClose(MainPID)
 
     wmi := ComObjGet("winmgmts:")
@@ -799,8 +929,13 @@ CloseMain() {
     }
 }
 
-RestartMain() {
-    global MainPID, SettingsFile
+RestartMain(reason := "watchdog-recovery") {
+    global MainPID, SettingsFile, StateFile
+
+    WriteRuntimeLog("WATCHDOG", "Restarting main PID " MainPID ": " reason ".", "WARN")
+    try IniWrite("watchdog-restarting", StateFile, "Health", "Phase")
+    try IniWrite(reason, StateFile, "Health", "Detail")
+    try IniWrite(0, StateFile, "Health", "TimeoutMs")
 
     try ProcessClose(MainPID)
 

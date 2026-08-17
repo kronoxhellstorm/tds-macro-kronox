@@ -9,7 +9,7 @@ Kronox's Edition is an analytics- and strategy-development-focused fork of **Ult
 * **Strategy Version Identity** - Each run records a fingerprint of the exact `.strat` contents used.
 * **Strategy Reliability Rules** - Strategy-specific clone retry/defer policies and late-wave skip controls.
 * **Abstract XP Tower Slots** - Record one hotbar slot as `Abstract` so the same farm strategy can place and operate any tower equipped there, with protected loadouts and extended placement retries for expensive towers.
-* **Fork-Safe Updates** - Executable self-updates check only the Kronox edition repository, preventing upstream builds from overwriting fork features. Until a release is published there, the check quietly does nothing. I will also update the lastest feature from original one.
+* **Fork-Safe Updates** - Update checks use only the Kronox Edition repository. New releases always produce an in-app notification; packaged releases can install automatically after creating a backup, while Git working copies remain notification-only.
 
 ## Original project
 
@@ -51,6 +51,18 @@ Ultimate Macro is an advanced, fully-featured automation tool for Roblox Tower D
 3. Install [AutoHotkey v2.0](https://www.autohotkey.com/).
 4. Run `Main.ahk`.
 5. Enjoy the grind!
+
+## Updates
+
+The macro checks the latest release from this repository when it starts outside an active strategy run. If a newer release exists, its changelog is shown in the app.
+
+* Releases with an attached Kronox Edition `.zip` offer a one-click update.
+* Releases without a package open the GitHub release page for manual download.
+* Git working copies never self-update, protecting local commits and uncommitted changes.
+* Automatic updates validate the package, back up the existing installation under `%LOCALAPPDATA%\Ultimate_Macro\UpdateBackups`, and overlay the new files without deleting custom strategies.
+* The release-package workflow builds and attaches the required ZIP and SHA-256 checksum. Automatic packaging can be enabled with the repository Actions variable `ENABLE_AUTOMATIC_RELEASE_PACKAGES=true`.
+
+> **One-time updater migration:** `1.3.2a-kronox.4` still contains the inherited destructive updater. Publish `.5` without an attached ZIP and ask existing users to install it manually. After users have moved to `.5`, enable automatic release packages for later versions.
 
 ## Abstract XP tower slots
 

@@ -1,4 +1,13 @@
 @echo off
+if exist "%~dp0kronox_update.bat" (
+    call "%~dp0kronox_update.bat" %*
+    exit /b
+)
+echo This legacy updater is disabled because it can remove user files.
+echo Install the latest Kronox Edition package manually.
+pause
+exit /b 1
+
 setlocal EnableDelayedExpansion
 chcp 65001 > nul
 cd %temp%

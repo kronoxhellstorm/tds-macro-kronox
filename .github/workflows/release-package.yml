@@ -1,0 +1,59 @@
+name: Package Kronox Edition release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to package
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    # Leave automatic packaging disabled for the .5 bootstrap release because
+    # .4 installations still contain the inherited destructive updater. Run
+    # this workflow manually when ready, or enable the repository Actions
+    # variable ENABLE_AUTOMATIC_RELEASE_PACKAGES for later releases.
+    if: github.event_name == 'workflow_dispatch' || vars.ENABLE_AUTOMATIC_RELEASE_PACKAGES == 'true'
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+    steps:
+      - name: Check out the released revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Build update package
+        shell: bash
+        run: |
+          set -euo pipefail
+          safe_tag="${RELEASE_TAG//\//-}"
+          package_dir="$RUNNER_TEMP/kronox-package"
+          asset="Ultimate-Macro-Kronox-Edition-${safe_tag}.zip"
+
+          mkdir -p "$package_dir"
+          rsync -a ./ "$package_dir/" \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude '*.log' \
+            --exclude '*_Verify.exe'
+
+          (
+            cd "$package_dir"
+            zip -q -r "$GITHUB_WORKSPACE/$asset" .
+          )
+          sha256sum "$asset" > "$asset.sha256"
+          echo "ASSET_NAME=$asset" >> "$GITHUB_ENV"
+
+      - name: Attach package and checksum to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" "$ASSET_NAME" "$ASSET_NAME.sha256" --clobber

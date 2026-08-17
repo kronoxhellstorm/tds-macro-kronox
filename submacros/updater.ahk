@@ -29,7 +29,8 @@ IsNewerUpdateVersion(latestVersion, currentVersion) {
 
 CheckForUpdate(currentVer, repository := "") {
     ; A fork must never install releases from the original project over itself.
-    ; Leave repository blank until Kronox's Edition has its own GitHub releases.
+    ; Release notifications work without an asset. One-click installation is
+    ; offered only for a packaged ZIP and never inside a Git working copy.
     repository := Trim(repository)
     if (repository = "")
         return 0
@@ -51,8 +52,12 @@ CheckForUpdate(currentVer, repository := "") {
                 latestVer := tag[1]
             
             downloadURL := ""
-            if RegExMatch(json, '"browser_download_url":"([^"]+)"', &download)
+            if RegExMatch(json, 'i)"browser_download_url":"([^"]+\.zip)"', &download)
                 downloadURL := download[1]
+
+            releaseURL := "https://github.com/" repository "/releases/latest"
+            if RegExMatch(json, '"html_url":"([^"]+/releases/tag/[^"]+)"', &release)
+                releaseURL := release[1]
             
             releaseBody := ""
             if RegExMatch(json, '"body":"([^"]+)"', &body)
@@ -65,7 +70,9 @@ CheckForUpdate(currentVer, repository := "") {
             releaseBody := StrReplace(releaseBody, "\\", "\")
             releaseBody := RegExReplace(releaseBody, "\\/", "/")
             
-            if (latestVer != "" && IsNewerUpdateVersion(latestVer, currentVer) && downloadURL != "") {
+            if (latestVer != "" && IsNewerUpdateVersion(latestVer, currentVer)) {
+                isGitCheckout := DirExist(A_ScriptDir "\.git")
+                canAutoUpdate := (downloadURL != "" && !isGitCheckout)
                 updateMsg := "New version " latestVer " is available!`n"
                 updateMsg .= "Current version: " currentVer "`n`n"
                 
@@ -76,20 +83,35 @@ CheckForUpdate(currentVer, repository := "") {
                     }
                     updateMsg .= releaseBody . "`n--------------------------------`n`n"
                 }
-                updateMsg .= "Do you want to update now?"
+                if (canAutoUpdate) {
+                    updateMsg .= "A verified release package is attached.`n"
+                    updateMsg .= "Your current installation will be backed up before updating.`n`n"
+                    updateMsg .= "Do you want to update now?"
+                } else {
+                    if (isGitCheckout)
+                        updateMsg .= "Automatic installation is disabled for Git working copies to protect local changes.`n`n"
+                    else
+                        updateMsg .= "This release has no packaged ZIP, so automatic installation is unavailable.`n`n"
+                    updateMsg .= "Do you want to open the release page?"
+                }
                 
-                if (MsgBox(updateMsg, "Update Available", 4) = "Yes") {
-                    updateBat := A_ScriptDir "\submacros\update.bat"
-                    tempBat := A_Temp "\TDSMacro_update.bat"
-                    
+                if (MsgBox(updateMsg, "Kronox Update Available", 4) = "Yes") {
+                    if (!canAutoUpdate) {
+                        Run(releaseURL)
+                        return 1
+                    }
+
+                    updateBat := A_ScriptDir "\submacros\kronox_update.bat"
+                    tempBat := A_Temp "\KronoxMacro_update.bat"
+
                     if !FileExist(updateBat) {
-                        MsgBox("update.bat not found!`n" updateBat, "Error", 16)
+                        MsgBox("The updater component was not found.`n`nOpen the release page and update manually instead.", "Updater Error", 16)
+                        Run(releaseURL)
                         return 0
                     }
-                    
+
                     FileCopy(updateBat, tempBat, 1)
-                    
-                    Run('"' tempBat '" "' downloadURL '" "' A_ScriptDir '"')
+                    Run('"' tempBat '" "' downloadURL '" "' A_ScriptDir '" "' latestVer '"')
                     ExitApp()
                 }
             }

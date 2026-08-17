@@ -41,7 +41,7 @@ if (A_PtrSize == 4) {
 #Include "%A_ScriptDir%\lib\ImageSearch\ImageSearch.ahk"
 #Include "%A_ScriptDir%\submacros\updater.ahk"
 
-ver := "1.3.2a-kronox.4"
+ver := "1.3.2a-kronox.5"
 ; Kronox's Edition checks only its own releases and never falls back to upstream builds.
 global ForkUpdateRepository := "kronoxhellstorm/tds-macro-kronox"
 
@@ -155,6 +155,7 @@ global RecordingsDir := A_AppData "\Ultimate_Macro\Recordings"
 global StateFile := A_AppData "\Ultimate_Macro\state.ini"
 global OverallStatsFile := A_AppData "\Ultimate_Macro\overall_stats.ini"
 global RunLedgerFile := A_AppData "\Ultimate_Macro\run_ledger.csv"
+global RuntimeLogDir := A_AppData "\Ultimate_Macro\Logs"
 
 global StratsDir := A_WorkingDir "\Resources\Strats"
 
@@ -170,6 +171,12 @@ if !DirExist(AppDataOpt)
     DirCreate(AppDataOpt)
 if !DirExist(RecordingsDir)
     DirCreate(RecordingsDir)
+if !DirExist(RuntimeLogDir)
+    DirCreate(RuntimeLogDir)
+
+OnError(HandleRuntimeError)
+WriteRuntimeLog("MAIN", "Macro process started (PID " DllCall("GetCurrentProcessId") ").")
+SetMacroPhase("idle", "macro-ui-ready", 0)
 
 ;INI READS
 global VipLink := IniRead(SettingsFile, "Options", "VipLink", "") 
@@ -1573,8 +1580,6 @@ MainGui.SetFont("s9 w400 cF5E9EC", "Segoe UI")
 global Stats_Details := MainGui.Add("Text", "x47 y356 w365 h86 Hidden BackgroundTrans", "No completed matches have been recorded yet.")
 MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
 global Stats_Recent := MainGui.Add("Text", "x457 y356 w196 h86 Hidden BackgroundTrans", "No confirmed results yet.")
-MainGui.SetFont("s8 w400 c987D83", "Segoe UI")
-global Stats_Attribution := MainGui.Add("Text", "x30 y469 w640 h18 Hidden Center", "Append-only run ledger • saved locally • no missing attempt is guessed as a loss")
 
 global StatsCtrls := [Stats_Kicker, Stats_TITLE, Stats_Subtitle, Stats_ScopeLabel, Stats_ScopeCtrl, Stats_FilterCtrl,
     Stats_MatchesBG, Stats_WinsBG, Stats_LossesBG, Stats_WinRateBG, Stats_CoverageBG,
@@ -1583,7 +1588,7 @@ global StatsCtrls := [Stats_Kicker, Stats_TITLE, Stats_Subtitle, Stats_ScopeLabe
     Stats_CoinsBG, Stats_GemsBG, Stats_XPBG,
     Stats_CoinsLabel, Stats_GemsLabel, Stats_XPLabel,
     Stats_CoinsValue, Stats_GemsValue, Stats_XPValue,
-    Stats_DetailsBG, Stats_RecentBG, Stats_DetailsTitle, Stats_RecentTitle, Stats_Details, Stats_Recent, Stats_Attribution]
+    Stats_DetailsBG, Stats_RecentBG, Stats_DetailsTitle, Stats_RecentTitle, Stats_Details, Stats_Recent]
 
 ; tab 8 - strategy editor ===========================
 
@@ -3733,6 +3738,7 @@ StartStrategy(ctrl, *) {
 
     MainGui.Hide()
     RunningStrategy := true
+    SetMacroPhase("strategy-starting", stratFile, 180000)
 
     time := FormatTime(, "HH:mm:ss")
     SplitPath(stratFile, &fileName)
@@ -3766,6 +3772,7 @@ StopStrategy(ctrl, *) {
     KillSubmacros()
 
     if (RunningStrategy) {
+        SetMacroPhase("strategy-stopping", "manual-stop", 0)
         ResolveActiveRunWithoutResult("Aborted", "manual-stop")
         if (AutorunStartTime > 0) {
             runtime := FormatRuntime(AutorunStartTime)
@@ -5482,6 +5489,7 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
 
     CurrentRunCount++
     IniWrite(CurrentRunCount, StateFile, "State", "CurrentRunCount")
+    SetMacroPhase("strategy-preparing", difficulty, 180000)
 
     KillSubmacros()
     startWatchdog()
@@ -5565,6 +5573,7 @@ PlayStrategy() {
     global AutoSkipSuccessfulCount, AutoSkipLastDetectedWave, AutoSkipBlockLogged, AdvancedLastSkippedWave
 
     BeginTrackedRun()
+    SetMacroPhase("strategy-playback", "recorded-steps", 0)
     IniWrite(A_TickCount, StateFile, "State", "TimeWhenStartedPlaying")
     AutoSkipSuccessfulCount := 0
     AutoSkipLastDetectedWave := 0
@@ -6132,6 +6141,7 @@ CheckRestart() {
 RunRoblox(doReload := true) {
     global VipLink, UseVipServer
     PlaceID := "3260590327"
+    SetMacroPhase("roblox-launch", "opening-lobby", 90000)
 
     Loop {
         if ((UseVipServer = "1" || UseVipServer = 1) && VipLink != "") {
@@ -6151,6 +6161,7 @@ RunRoblox(doReload := true) {
         Run(DeepLink)
         if !WinWait("ahk_exe RobloxPlayerBeta.exe", , 60) {
             LogToConsole("Roblox not started, retrying again...", true, false)
+            TouchMacroHeartbeat("deep-link-retry")
             continue
         }
         ActivateRoblox()
@@ -6168,7 +6179,8 @@ RunRoblox(doReload := true) {
 
             if (A_TickCount - startTime > 60000) {
                 if (doReload) {
-                    SafeReload()
+                    SafeReload("roblox-lobby-load-timeout")
+                    return false
                 } else {
                     return false
                 }
@@ -6176,6 +6188,7 @@ RunRoblox(doReload := true) {
 
             res0 := AdvImageSearch("Resources/Play.png", Round(w * 0.25), Round(h * 0.66), Round(w * 0.75), Round(h * 0.34))
             if (res0.status = "success" && res0.score > 0.65) {
+                SetMacroPhase("roblox-lobby-ready", "play-button-visible", 0)
                 break
             } 
             Sleep(1500)
@@ -6265,26 +6278,80 @@ SwitchToNextStrategy(&stratName) {
     return true
 }
 
+IsJoinedVoteLobbyVisible() {
+    getRobloxPos(,, &w, &h)
+    if (w < 100 || h < 100)
+        return false
+
+    ready := AdvImageSearch("Resources/Ready.png", Round(w * 0.25), Round(h * 0.66), Round(w * 0.5), Round(h * 0.34), 0.6, 1.7)
+    return (ready.status = "success" && ready.score >= 0.7)
+}
+
+WaitForJoinOption(imageFile, threshold, phaseName, x1, y1, x2, y2, timeoutMs := 60000) {
+    global difficulty
+
+    SetMacroPhase(phaseName, difficulty, timeoutMs)
+    startedAt := A_TickCount
+    lastPlayRetry := 0
+
+    Loop {
+        if IsJoinedVoteLobbyVisible() {
+            LogToConsole("The " difficulty " voting lobby is already joined; skipping the remaining mode buttons.", true, false)
+            SetMacroPhase("join-already-complete", difficulty, 0)
+            return "joined"
+        }
+
+        elapsed := A_TickCount - startedAt
+        if (elapsed >= timeoutMs) {
+            LogToConsole("Timed out during " phaseName " after " Round(elapsed / 1000) " seconds; recovering...", true, false)
+            return "timeout"
+        }
+
+        if (elapsed >= 15000 && (lastPlayRetry = 0 || A_TickCount - lastPlayRetry >= 8000)) {
+            playButton := AdvImageSearch("Resources\Play.png", x1, y1, x2, y2)
+            if (playButton.status = "success" && playButton.score > 0.65) {
+                Click(playButton.x, playButton.y)
+                WriteRuntimeLog("MAIN", "Retried the Play button during " phaseName ".", "WARN")
+            }
+            lastPlayRetry := A_TickCount
+        }
+
+        getRobloxPos(,, &w, &h)
+        option := AdvImageSearch("Resources/" imageFile, 0, 0, w, h)
+        if (option.status = "success" && option.score >= threshold) {
+            Click(option.x, option.y)
+            SetMacroPhase(phaseName "-selected", imageFile, 0)
+            return "selected"
+        }
+        Sleep(150)
+    }
+}
+
 WaitForLobbyLoad() {
-    global difficulty, MultiplayerEnabled, PlayerRole
+    global difficulty, MultiplayerEnabled, PlayerRole, modifiers, gamemap
 
     SetTimer(CheckPopups, 0)
+    SetMacroPhase("join-wait-vote-lobby", difficulty, 75000)
 
     startTime := A_TickCount
     if (difficulty != "Pizza Party" && difficulty != "Badlands II" && difficulty != "Polluted Wasteland II") {
         Sleep(6000)
         Loop {
             if (A_TickCount - startTime > 60000) {
+                LogToConsole("The Frost voting lobby did not finish loading; restarting safely...", true, false)
                 CloseRoblox()
-                SafeReload()
+                SafeReload("vote-lobby-load-timeout")
+                return false
             }
             getRobloxPos(,,&w,&h)
             res := AdvImageSearch("Resources/Ready.png", Round(w * 0.25), Round(h * 0.66), Round(w * 0.5), Round(h * 0.34), 0.6, 1.7)
             if (res.status = "success" && res.score >= 0.7) {
                 break
             }
-            Sleep(100)
+            Sleep(150)
         }
+
+        SetMacroPhase("map-voting", gamemap, 180000)
         if (!MultiplayerEnabled || PlayerRole = "Host") {
             SelectMap(res.x, res.y)
         } else {
@@ -6295,35 +6362,49 @@ WaitForLobbyLoad() {
                 ApplyModifiers()
         }
     }
+
+    SetMacroPhase("match-setup", gamemap, 180000)
+    return true
 }
 
 JoinGame() {
-    global SendCurrenciesEnabled, WebhookEnabled, difficulty, CollectPlaytimeRewards, PlayerRole, MultiplayerEnabled
+    global SendCurrenciesEnabled, WebhookEnabled, difficulty, CollectPlaytimeRewards, PlayerRole, MultiplayerEnabled, PartyMembers
     getRobloxPos(,, &w, &h)
 
     isHardcore := (difficulty = "Hardcore" || difficulty = "Voidcore")
-    
+    SetMacroPhase("join-wait-play", difficulty, 90000)
+
     startTime := A_TickCount
+    lastJoinedCheck := 0
     Loop {
-        if (A_TickCount - startTime > 80000) { 
-            SafeReload()
-            break
+        if (A_TickCount - startTime > 80000) {
+            LogToConsole("The Play button did not appear within 80 seconds; recovering...", true, false)
+            SafeReload("join-play-button-timeout")
+            return
         }
 
+        if (lastJoinedCheck = 0 || A_TickCount - lastJoinedCheck >= 500) {
+            if IsJoinedVoteLobbyVisible() {
+                LogToConsole("The " difficulty " lobby is already open; continuing from its current state.", true, false)
+                WaitForLobbyLoad()
+                return
+            }
+            lastJoinedCheck := A_TickCount
+        }
+
+        getRobloxPos(,, &w, &h)
         x1 := Round(w * 0.25)
         y1 := Round(h * 0.66)
         x2 := Round(w * 0.75)
         y2 := Round(h * 0.34)
-        
+
         res := AdvImageSearch("Resources\Play.png", x1, y1, x2, y2)
         if (res.status == "success" && res.score > 0.65) {
-            if (!isHardcore) {
+            if (!isHardcore)
                 ActivateRoblox()
-            }
-            if (CollectPlaytimeRewards = "1" || CollectPlaytimeRewards = 1) {
+            if (CollectPlaytimeRewards = "1" || CollectPlaytimeRewards = 1)
                 claimPlaytimeRewards()
-            }
-            
+
             LowerGraphics()
             Sleep(50)
 
@@ -6335,11 +6416,9 @@ JoinGame() {
                 } else {
                     CreateParty(res.x, res.y)
                 }
-                    
             }
 
             LogToConsole("Joining " difficulty "...", true, false)
-            
             Click(res.x, res.y)
             break
         }
@@ -6347,99 +6426,81 @@ JoinGame() {
     }
     Sleep(300)
 
-    startTime := A_TickCount
     modeImg := ""
-
-    if (difficulty = "Pizza Party" || difficulty = "Badlands II" || difficulty = "Polluted Wasteland II") {
+    if (difficulty = "Pizza Party" || difficulty = "Badlands II" || difficulty = "Polluted Wasteland II")
         modeImg := "SpecialMode.png"
-    }
 
-    if modeImg != "" {
-        Loop {
-            if (A_TickCount - startTime > 20000) {
-                newStartTime := A_TickCount
-                res := AdvImageSearch("Resources\Play.png", x1, y1, x2, y2)
-                if (res.status == "success" && res.score > 0.65) {   
-                    Click(res.x, res.y)
-                    startTime := A_TickCount
-                } else {
-                    if (A_TickCount - newStartTime > 40000) {
-                        SafeReload()
-                        break
-                    }
-                }
-            }
-
-            res := AdvImageSearch("Resources/" modeImg, 0, 0, w, h)
-            if (res.status = "success" && res.score >= 0.67) {
-                Click(res.x, res.y)
-                break 
-            }
-            Sleep(100)
+    if (modeImg != "") {
+        outcome := WaitForJoinOption(modeImg, 0.67, "join-select-special-mode", x1, y1, x2, y2)
+        if (outcome = "joined") {
+            WaitForLobbyLoad()
+            return
+        }
+        if (outcome = "timeout") {
+            SafeReload("join-special-mode-timeout")
+            return
         }
         Sleep(300)
     }
 
-    startTime := A_TickCount
-    Loop {
-        if (A_TickCount - startTime > 20000) {
-            newStartTime := A_TickCount
-            res := AdvImageSearch("Resources\Play.png", x1, y1, x2, y2)
-            if (res.status == "success" && res.score > 0.7) {   
-                Click(res.x, res.y)
-                startTime := A_TickCount
-            } else {
-                if (A_TickCount - newStartTime > 40000) {
-                    SafeReload()
-                    break
-                }
-            }
-        }
-        res := AdvImageSearch("Resources/" difficulty ".png", 0, 0, w, h)
-        if (res.status = "success" && res.score >= 0.7) {
-            Click(res.x, res.y)
-            break 
-        }
-        Sleep(100)
+    outcome := WaitForJoinOption(difficulty ".png", 0.7, "join-select-difficulty", x1, y1, x2, y2)
+    if (outcome = "joined") {
+        WaitForLobbyLoad()
+        return
+    }
+    if (outcome = "timeout") {
+        SafeReload("join-difficulty-timeout")
+        return
     }
     Sleep(300)
 
+    SetMacroPhase("join-select-party-size", difficulty, 50000)
     startTime := A_TickCount
+    lastJoinedCheck := 0
     Loop {
-        if (A_TickCount - startTime > 40000) { 
-            SafeReload()
-            break
+        if (A_TickCount - startTime > 40000) {
+            LogToConsole("The party-size button did not appear; recovering...", true, false)
+            SafeReload("join-party-size-timeout")
+            return
         }
+
+        if (lastJoinedCheck = 0 || A_TickCount - lastJoinedCheck >= 500) {
+            if IsJoinedVoteLobbyVisible() {
+                LogToConsole("The voting lobby loaded before party-size confirmation; continuing.", true, false)
+                WaitForLobbyLoad()
+                return
+            }
+            lastJoinedCheck := A_TickCount
+        }
+
+        getRobloxPos(,, &w, &h)
         if (!MultiplayerEnabled) {
             res := AdvImageSearch("Resources/Solo.png", 0, Round(h * 0.2), Round(w * 0.7), Round(h * 0.55))
             if (res.status = "success" && res.score >= 0.7) {
                 Click(res.x, res.y)
-                break 
+                break
             }
         } else {
             totalPartyMembers := 0
             Loop Parse, PartyMembers, "," {
                 member := Trim(A_LoopField)
-                if (member = "") {
-                    continue
-                }
-                totalPartyMembers++
+                if (member != "")
+                    totalPartyMembers++
             }
-            if (totalPartyMembers = 1) {
+
+            if (totalPartyMembers = 1)
                 res := AdvImageSearch("Resources/duo.png", Round(w * 0.2), Round(h * 0.2), Round(w * 0.6), Round(h * 0.6))
-            } else if (totalPartyMembers = 2) {
+            else if (totalPartyMembers = 2)
                 res := AdvImageSearch("Resources/trio.png", Round(w * 0.2), Round(h * 0.2), Round(w * 0.6), Round(h * 0.6))
-            } else if (totalPartyMembers = 3) {
+            else if (totalPartyMembers = 3)
                 res := AdvImageSearch("Resources/quad.png", Round(w * 0.2), Round(h * 0.2), Round(w * 0.6), Round(h * 0.6))
-            } else {
+            else
                 res := AdvImageSearch("Resources/Solo.png", 0, Round(h * 0.2), Round(w * 0.7), Round(h * 0.55))
-            }
 
             if (res.status = "success" && res.score >= 0.7) {
                 Click(res.x, res.y)
-                break 
+                break
             }
-
         }
         Sleep(100)
     }
@@ -8407,11 +8468,73 @@ UpdateOverlay() {
     }
 }
 
+WriteRuntimeLog(source, text, level := "INFO") {
+    global RuntimeLogDir
+
+    try {
+        if !DirExist(RuntimeLogDir)
+            DirCreate(RuntimeLogDir)
+
+        cleanText := StrReplace(String(text), "`r", "")
+        cleanText := StrReplace(cleanText, "`n", " | ")
+        logPath := RuntimeLogDir "\macro-" FormatTime(, "yyyy-MM-dd") ".log"
+        line := FormatTime(, "yyyy-MM-dd HH:mm:ss") " [" level "] [" source "] " cleanText "`n"
+        FileAppend(line, logPath, "UTF-8")
+    }
+}
+
+SetMacroPhase(phase, detail := "", timeoutMs := 0) {
+    global StateFile
+
+    detail := StrReplace(String(detail), "`r", "")
+    detail := StrReplace(detail, "`n", " | ")
+    previousPhase := ""
+    previousDetail := ""
+    try previousPhase := IniRead(StateFile, "Health", "Phase", "")
+    try previousDetail := IniRead(StateFile, "Health", "Detail", "")
+
+    ownerPid := DllCall("GetCurrentProcessId")
+    nowTick := A_TickCount
+    IniWrite(ownerPid, StateFile, "Health", "OwnerPID")
+    IniWrite(phase, StateFile, "Health", "Phase")
+    IniWrite(detail, StateFile, "Health", "Detail")
+    IniWrite(nowTick, StateFile, "Health", "PhaseStartedTick")
+    IniWrite(nowTick, StateFile, "Health", "HeartbeatTick")
+    IniWrite(Max(0, Integer(timeoutMs)), StateFile, "Health", "TimeoutMs")
+    IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "Health", "UpdatedAt")
+
+    if (phase != previousPhase || detail != previousDetail)
+        WriteRuntimeLog("MAIN", "Phase -> " phase (detail != "" ? " (" detail ")" : ""))
+}
+
+TouchMacroHeartbeat(detail := "") {
+    global StateFile
+
+    IniWrite(A_TickCount, StateFile, "Health", "HeartbeatTick")
+    IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "Health", "UpdatedAt")
+    if (detail != "")
+        IniWrite(detail, StateFile, "Health", "Detail")
+}
+
+HandleRuntimeError(err, mode) {
+    message := "Unhandled error"
+    try message := err.Message
+    location := ""
+    try location := err.File (err.Line ? ":" err.Line : "")
+    detail := message (location != "" ? " at " location : "") " [mode " mode "]"
+    try WriteRuntimeLog("MAIN", detail, "ERROR")
+    ; Keep the normal AutoHotkey error dialog, but let the independent watchdog
+    ; recover an unattended run if the failed thread leaves the process alive.
+    try SetMacroPhase("fatal-error", detail, 15000)
+    return false
+}
+
 LogToConsole(text, SendWebhookInstantly := false, flush := true) {
     global DebugConsole, LogLines, OverlayHWND, WebhookEnabled, WebhookLink, RunningStrategy, AutorunStartTime
 
     time := FormatTime(, "HH:mm:ss")
     formattedText := "[" time "] " text
+    WriteRuntimeLog("MAIN", text)
     LogLines.Push(formattedText)
     while (LogLines.Length > 500)
         LogLines.RemoveAt(1)
@@ -8854,12 +8977,14 @@ FlushWebhookQueue() {
     }
 }
 
-SafeReload() {
+SafeReload(reason := "automatic-recovery") {
     global RestartLock, StateFile, RunningStrategy, OverlayHWND, MainGui
     if (RestartLock) {
         return
     }
     RestartLock := true
+    WriteRuntimeLog("MAIN", "Safe reload requested: " reason, "WARN")
+    SetMacroPhase("reloading", reason, 0)
     KillSubmacros()
     if (OverlayHWND) {
         WinClose("ahk_id " OverlayHWND)
@@ -8883,6 +9008,11 @@ SafeReload() {
 }
 
 startWatchdog() {
+    global watchdogPID
+
+    if (watchdogPID != "" && ProcessExist(watchdogPID))
+        return
+
     currentPID := DllCall("GetCurrentProcessId")
     if (A_PtrSize == 4) {
     Run('"' A_ScriptDir '\submacros\AutoHotkey32.exe" "' A_ScriptDir '\submacros\watchdog.ahk" ' currentPID, , , &watchdogPID)
