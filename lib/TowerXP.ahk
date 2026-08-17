@@ -1,0 +1,92 @@
+#Requires AutoHotkey v2.0
+
+; Tower Evolution progression shared by the main UI and result watchdog.
+; CurrentXP is XP already earned inside the current level, not lifetime XP.
+TowerXPDefinitions() {
+    static definitions := [
+        {name: "Scout",       file: "Scout.png",       baseXP: 50, growth: 1.09,  maxLevel: 20},
+        {name: "Minigunner",  file: "Minigunner.png",  baseXP: 50, growth: 1.09,  maxLevel: 20},
+        {name: "Crook Boss",  file: "Crookboss.png",   baseXP: 50, growth: 1.09,  maxLevel: 20},
+        {name: "Shotgunner",  file: "Shotgunner.png",  baseXP: 50, growth: 1.09,  maxLevel: 20},
+        {name: "Operator",    file: "Operator.png",    baseXP: 75, growth: 1.075, maxLevel: 20},
+        {name: "Juggernaut",  file: "Juggernaut.png",  baseXP: 75, growth: 1.075, maxLevel: 20},
+        {name: "Kingpin",     file: "Kingpin.png",     baseXP: 75, growth: 1.075, maxLevel: 20},
+        {name: "Enforcer",    file: "Enforcer.png",    baseXP: 75, growth: 1.075, maxLevel: 20}
+    ]
+    return definitions
+}
+
+TowerXPSectionName(towerName) {
+    return "TowerXP_" RegExReplace(towerName, "[^A-Za-z0-9]+", "_")
+}
+
+TowerXPNextRequired(definition, currentLevel) {
+    currentLevel := Integer(currentLevel)
+    if (currentLevel >= definition.maxLevel)
+        return 0
+    return Floor(definition.baseXP * (definition.growth ** currentLevel))
+}
+
+TowerXPAdvance(definition, currentLevel, currentXP, gainedXP := 0) {
+    level := Max(0, Min(definition.maxLevel, Integer(currentLevel)))
+    xp := Max(0, Integer(currentXP) + Integer(gainedXP))
+    levelsGained := 0
+
+    while (level < definition.maxLevel) {
+        required := TowerXPNextRequired(definition, level)
+        if (xp < required)
+            break
+        xp -= required
+        level += 1
+        levelsGained += 1
+    }
+
+    if (level >= definition.maxLevel)
+        xp := 0
+
+    return {level: level, xp: xp, levelsGained: levelsGained,
+        nextRequired: TowerXPNextRequired(definition, level), isMax: level >= definition.maxLevel}
+}
+
+; Every tower shown on one Triumph result receives the same tower-XP reward.
+; Return a value only when the successful OCR readings have one clear winner;
+; ties stay unresolved so a bad reading can never silently invent progression.
+TowerXPConsensusAmount(amounts) {
+    counts := Map()
+    for rawAmount in amounts {
+        if (!IsNumber(rawAmount))
+            continue
+        amount := Integer(rawAmount)
+        if (amount <= 0)
+            continue
+        counts[amount] := counts.Has(amount) ? counts[amount] + 1 : 1
+    }
+
+    bestAmount := 0
+    bestCount := 0
+    tied := false
+    for amount, count in counts {
+        if (count > bestCount) {
+            bestAmount := amount
+            bestCount := count
+            tied := false
+        } else if (count = bestCount) {
+            tied := true
+        }
+    }
+    return (bestCount > 0 && !tied) ? bestAmount : 0
+}
+
+TowerXPStoredStopMode(labelOrValue) {
+    value := Trim(String(labelOrValue))
+    if (value = "Any selected tower" || value = "Any")
+        return "Any"
+    if (value = "All selected towers" || value = "All")
+        return "All"
+    return "Never"
+}
+
+TowerXPStopModeLabel(value) {
+    value := TowerXPStoredStopMode(value)
+    return value = "Any" ? "Any selected tower" : (value = "All" ? "All selected towers" : "Never")
+}

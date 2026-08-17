@@ -9,6 +9,7 @@ Kronox's Edition is an analytics- and strategy-development-focused fork of **Ult
 * **Strategy Version Identity** - Each run records a fingerprint of the exact `.strat` contents used.
 * **Strategy Reliability Rules** - Strategy-specific clone retry/defer policies and late-wave skip controls.
 * **Abstract XP Tower Slots** - Record one hotbar slot as `Abstract` so the same farm strategy can place and operate any tower equipped there, with protected loadouts and extended placement retries for expensive towers.
+* **Tower Evolution XP Tracker** - Read default-skin reward cards after Triumphs, maintain per-tower levels and in-level XP, report gains in the overlay/webhook, and optionally stop when selected towers reach level 20.
 * **Fork-Safe Updates** - Update checks use only the Kronox Edition repository. New releases always produce an in-app notification; packaged releases can install automatically after creating a backup, while Git working copies remain notification-only.
 
 ## Original project
@@ -66,9 +67,19 @@ The macro checks the latest release from this repository when it starts outside 
 
 ## Abstract XP tower slots
 
-Enable **Abstract XP tower** on the Record tab and choose a hotbar slot before recording. The saved strategy writes `abstractSlot=1..5`, records that slot with `Abstract` tower IDs, and replays every placement, upgrade, and sell action against whatever tower you equip in that slot.
+Enable **Abstract XP towers** on the Record tab and choose up to four hotbar slots before recording. New strategies save the selected slots in `abstractSlots=...` while retaining `abstractSlot=...` for compatibility with older versions. Each selected slot records with independent `Abstract1`, `Abstract2`, and later IDs, then replays against whatever tower you equip in that slot.
 
-Abstract strategies intentionally skip Auto Equip to preserve the player's chosen XP tower. Equip the other required towers manually, put the tower you want to level in the declared slot, and then start the strategy. Abstract placements retry for up to 15 minutes so expensive towers have time to become affordable.
+Abstract strategies intentionally skip Auto Equip to preserve the player's chosen XP towers. Equip the other required towers manually, put the towers you want to level in the declared slots, and then start the strategy. Abstract placements retry for up to 15 minutes so expensive towers have time to become affordable.
+
+The bundled **Kronox's Abstract 4 Slot Farm** strategy supports one to four active abstract towers in slots 2–5. Choose the active count beside the strategy controls before starting. Inactive abstract placements are skipped before any hotbar key or click is sent, so their slots may safely remain empty. Its four placements use a wide vertical spacing and receive no upgrade actions before the original strategy continues.
+
+## Tower Evolution XP tracking
+
+Open **Settings > Tower XP Tracker**, enable tracking, and enter each tracked tower's current level and XP inside that level. You can leave automatic stopping off, stop when any selected target reaches level 20, or wait until all selected targets are maxed. Confirmed gains are shown in the run overlay and result webhook.
+
+If a tracked default-skin portrait is recognized but its XP text cannot be read, the tracker can recover it from the unambiguous shared tower-XP reward shown on the other cards from that same Triumph. Conflicting reward readings are never guessed.
+
+> **Default skins are required.** Reward recognition uses the tower portraits shown on the Triumph screen. Any tracked tower using an alternate skin is intentionally ignored rather than risking XP being assigned to the wrong tower.
 
 ## Links & Support for Original Creator
 

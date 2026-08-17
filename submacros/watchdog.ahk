@@ -14,6 +14,7 @@ SetWorkingDir(A_ScriptDir "\..\")
 #Include "%A_LineFile%\..\..\lib\Gdip_All.ahk"
 #Include "%A_LineFile%\..\..\lib\OCR.ahk"
 #Include "%A_LineFile%\..\..\lib\Roblox.ahk"
+#Include "%A_LineFile%\..\..\lib\TowerXP.ahk"
 
 Opt := A_AppData "\Ultimate_Macro\Options"
 SettingsFile := Opt "\Settings.tds"
@@ -33,6 +34,8 @@ global WebhookSepatateTriumphScreenshots := IniRead(SettingsFile, "Webhook", "We
 global WebhookLink2 := IniRead(SettingsFile, "Webhook", "Link2", "")
 
 global ResourcesDir := A_WorkingDir "\Resources"
+global TowerXPResourcesDir := ResourcesDir "\TowerXP"
+global TowerXPTemplateDir := A_AppData "\Ultimate_Macro\TowerXPTemplates"
 global TriumphImg1 := ResourcesDir "\triumph.png"
 global TriumphImg2 := ResourcesDir "\PlayAgain.png"
 global YouLostImg := ResourcesDir "\YouLost.png"
@@ -153,7 +156,7 @@ Loop {
             CloseMain()
             Sleep 1300
             resultStatus := SendInfo("Triumph", "triumph-title")
-            if (resultStatus != "duplicate")
+            if (resultStatus != "duplicate" && resultStatus != "tower-xp-stop")
                 RestartMain("result-triumph-title")
             ExitApp()
         }
@@ -166,7 +169,7 @@ Loop {
             CloseMain()
             Sleep 1300
             resultStatus := SendInfo("Triumph", "play-again-button")
-            if (resultStatus != "duplicate")
+            if (resultStatus != "duplicate" && resultStatus != "tower-xp-stop")
                 RestartMain("result-play-again-button")
             ExitApp()
         }
@@ -297,6 +300,7 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     coinVal := 0
     gemVal := 0
     expVal := 0
+    towerXPResult := {summary: "", detected: 0, stopTriggered: false, stopMessage: ""}
     strategyFile := IniRead(StateFile, "State", "Strategy", "")
     activeRunId := IniRead(StateFile, "State", "ActiveRunId", "")
     lastCompletedRunId := IniRead(StateFile, "State", "LastCompletedRunId", "")
@@ -484,6 +488,13 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     if (modeName = "")
         modeName := "Unknown"
 
+    if (matchResult = "Triumph") {
+        if (FoundX > 0 && FoundY > 0)
+            towerXPResult := ProcessTowerXPRewards(FoundX, FoundY, w, h)
+        else if (Integer(IniRead(SettingsFile, "TowerXP", "Enabled", 0)) = 1)
+            WriteRuntimeLog("TOWERXP", "Triumph was recorded without a stable result anchor; tower XP was not changed.", "WARN")
+    }
+
     totalTriumphs := IniRead(StateFile, "State", "TotalTriumphs", 0)
     totalLosses := IniRead(StateFile, "State", "TotalLosses", 0)
     
@@ -607,6 +618,11 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
         description .= "-# Total Matches: " totalMatches ", wins: " totalTriumphs ", losses: " totalLosses ", W/R: " winrate "%, W/L ratio: " wlRatioStr ", " coinsPerHour " coins/h, " gemsPerHour " gems/h, " expPerHour " exp/h, avg. time: " avgTimeStr
     }
 
+    if (towerXPResult.summary != "")
+        description .= "`nTower XP: **" towerXPResult.summary "**"
+    if (towerXPResult.stopTriggered)
+        description .= "`n### :dart: Tower XP target reached`nMacro stopped automatically: **" towerXPResult.stopMessage "**"
+
     ; Emit exactly one result webhook. The old missing-anchor fallback sent a
     ; header here early and then this full report, producing duplicate posts.
     if (shouldSendWebhook) {
@@ -624,7 +640,209 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
         WebhookLink := originalWebhookLink
 
     WriteRuntimeLog("WATCHDOG", "Recorded " matchResult " for run " (activeRunId != "" ? activeRunId : "legacy") " via " detectionSource ".")
+    if (towerXPResult.stopTriggered) {
+        IniWrite(0, StateFile, "State", "Running")
+        IniWrite("tower-xp-target-complete", StateFile, "State", "LastStopReason")
+        IniWrite("stopped", StateFile, "Health", "Phase")
+        IniWrite("tower-xp-target-complete", StateFile, "Health", "Detail")
+        IniWrite(0, StateFile, "Health", "TimeoutMs")
+        IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "Health", "UpdatedAt")
+        WriteRuntimeLog("TOWERXP", "Macro stopped: " towerXPResult.stopMessage ".")
+        return "tower-xp-stop"
+    }
     return "recorded"
+}
+
+EnsureTowerXPTemplate(definition) {
+    global TowerXPResourcesDir, TowerXPTemplateDir
+
+    sourcePath := TowerXPResourcesDir "\" definition.file
+    if (!FileExist(sourcePath))
+        return ""
+    if (!DirExist(TowerXPTemplateDir))
+        DirCreate(TowerXPTemplateDir)
+    targetPath := TowerXPTemplateDir "\" RegExReplace(definition.name, "[^A-Za-z0-9]+", "_") "_portrait.png"
+
+    rebuild := !FileExist(targetPath)
+    if (!rebuild) {
+        try rebuild := FileGetTime(sourcePath, "M") > FileGetTime(targetPath, "M")
+    }
+    if (!rebuild)
+        return targetPath
+
+    sourceBitmap := Gdip_CreateBitmapFromFile(sourcePath)
+    if (!sourceBitmap)
+        return ""
+    Gdip_GetImageDimensions(sourceBitmap, &sourceW, &sourceH)
+    portraitH := Max(1, Round(sourceH * 0.72))
+    portraitBitmap := Gdip_CloneBitmapArea(sourceBitmap, 0, 0, sourceW, portraitH)
+    Gdip_DisposeImage(sourceBitmap)
+    if (!portraitBitmap)
+        return ""
+    try Gdip_SaveBitmapToFile(portraitBitmap, targetPath, 100)
+    Gdip_DisposeImage(portraitBitmap)
+    return FileExist(targetPath) ? targetPath : ""
+}
+
+ReadTowerXPAmount(candidate) {
+    robloxHwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
+    if (!robloxHwnd)
+        return 0
+
+    regionX := Max(0, Round(candidate.x - (candidate.w * 0.55)))
+    regionY := Max(0, Round(candidate.y + (candidate.h * 0.16)))
+    regionW := Max(40, Round(candidate.w * 1.1))
+    regionH := Max(40, Round(candidate.h * 0.72))
+    ocrText := ""
+
+    try {
+        hBitmap := OCR.CreateHBitmap(regionX, regionY, regionW, regionH,
+            {hWnd: robloxHwnd, onlyClientArea: 1, mode: 2}, 4)
+        ocrText := OCR.FromBitmap(hBitmap, {lang: "en-US", grayscale: true}).Text
+    } catch Error as err {
+        WriteRuntimeLog("TOWERXP", "Could not OCR reward card for " candidate.definition.name ": " err.Message, "WARN")
+        return 0
+    }
+
+    if RegExMatch(ocrText, "i)[+t]?\s*(\d[\d,.]*)\s*[xX*][pP]", &xpMatch)
+        return Integer(StrReplace(StrReplace(xpMatch[1], ",", ""), ".", ""))
+    cleanOCR := Trim(StrReplace(ocrText, "`n", " "))
+    WriteRuntimeLog("TOWERXP", "Recognized " candidate.definition.name " portrait but could not read its XP text (OCR: " cleanOCR ").", "WARN")
+    return 0
+}
+
+ProcessTowerXPRewards(foundX, foundY, clientW, clientH) {
+    global SettingsFile
+
+    result := {summary: "", detected: 0, stopTriggered: false, stopMessage: ""}
+    if (Integer(IniRead(SettingsFile, "TowerXP", "Enabled", 0)) != 1)
+        return result
+
+    searchX := Max(0, Round(foundX - sX(520)))
+    searchY := Max(0, Round(foundY - sY(430)))
+    searchRight := Min(clientW, Round(foundX + sX(520)))
+    searchBottom := Min(clientH, Round(foundY - sY(20)))
+    searchW := Max(1, searchRight - searchX)
+    searchH := Max(1, searchBottom - searchY)
+    candidates := []
+
+    for definition in TowerXPDefinitions() {
+        section := TowerXPSectionName(definition.name)
+        if (Integer(IniRead(SettingsFile, section, "Tracked", 0)) != 1)
+            continue
+        templatePath := EnsureTowerXPTemplate(definition)
+        if (templatePath = "") {
+            WriteRuntimeLog("TOWERXP", "Missing or invalid default-skin template for " definition.name ".", "WARN")
+            continue
+        }
+        match := AdvImageSearch(templatePath, searchX, searchY, searchW, searchH, 0.65, 1.6, 0.025)
+        if (match.status = "success" && match.score >= 0.80)
+            candidates.Push({definition: definition, x: match.x, y: match.y, w: match.w, h: match.h, score: match.score})
+        else if (match.status = "success" && match.score >= 0.68)
+            WriteRuntimeLog("TOWERXP", "Ignored uncertain " definition.name " reward portrait (confidence " Round(match.score * 100) "%). Default skins are required.", "WARN")
+    }
+
+    ; Different tower templates share the card border. Keep only the strongest
+    ; candidate when two templates resolve to the same reward-card position.
+    accepted := []
+    while (candidates.Length > 0) {
+        bestIndex := 1
+        Loop candidates.Length {
+            if (candidates[A_Index].score > candidates[bestIndex].score)
+                bestIndex := A_Index
+        }
+        candidate := candidates.RemoveAt(bestIndex)
+        overlaps := false
+        for existing in accepted {
+            distance := Sqrt(((candidate.x - existing.x) ** 2) + ((candidate.y - existing.y) ** 2))
+            if (distance < Max(candidate.w, existing.w) * 0.65) {
+                overlaps := true
+                break
+            }
+        }
+        if (!overlaps)
+            accepted.Push(candidate)
+    }
+
+    readings := []
+    successfulAmounts := []
+    for candidate in accepted {
+        gainedXP := ReadTowerXPAmount(candidate)
+        readings.Push({candidate: candidate, gainedXP: gainedXP})
+        if (gainedXP > 0)
+            successfulAmounts.Push(gainedXP)
+    }
+
+    sharedRewardXP := TowerXPConsensusAmount(successfulAmounts)
+    summaries := []
+    for reading in readings {
+        candidate := reading.candidate
+        gainedXP := reading.gainedXP
+        usedSharedReward := false
+        if (gainedXP <= 0 && sharedRewardXP > 0) {
+            gainedXP := sharedRewardXP
+            usedSharedReward := true
+            WriteRuntimeLog("TOWERXP", "Recovered " candidate.definition.name " reward as " gainedXP " XP from the matching rewards on the same Triumph screen.", "WARN")
+        }
+        if (gainedXP <= 0)
+            continue
+        definition := candidate.definition
+        section := TowerXPSectionName(definition.name)
+        oldLevel := Integer(IniRead(SettingsFile, section, "Level", 0))
+        oldXP := Integer(IniRead(SettingsFile, section, "XP", 0))
+        progress := TowerXPAdvance(definition, oldLevel, oldXP, gainedXP)
+        IniWrite(progress.level, SettingsFile, section, "Level")
+        IniWrite(progress.xp, SettingsFile, section, "XP")
+        IniWrite(gainedXP, SettingsFile, section, "LastGainedXP")
+        IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), SettingsFile, section, "LastUpdated")
+        status := progress.isMax ? "MAX" : progress.xp "/" progress.nextRequired
+        summaries.Push(definition.name " +" gainedXP (usedSharedReward ? " (shared)" : "") " -> L" progress.level " " status)
+        result.detected += 1
+        WriteRuntimeLog("TOWERXP", definition.name " gained " gainedXP " XP; now level " progress.level (progress.isMax ? " (MAX)." : " with " progress.xp "/" progress.nextRequired " XP."))
+    }
+
+    for index, summary in summaries
+        result.summary .= (index > 1 ? " | " : "") summary
+    if (result.detected = 0)
+        WriteRuntimeLog("TOWERXP", "No confident tracked-tower reward cards were read. Tracked towers must use default skins; progression was left unchanged.", "WARN")
+
+    stopEvaluation := EvaluateTowerXPStopRule()
+    result.stopTriggered := stopEvaluation.triggered
+    result.stopMessage := stopEvaluation.message
+    return result
+}
+
+EvaluateTowerXPStopRule() {
+    global SettingsFile
+
+    stopMode := TowerXPStoredStopMode(IniRead(SettingsFile, "TowerXP", "StopMode", "Never"))
+    if (stopMode = "Never")
+        return {triggered: false, message: ""}
+
+    targets := []
+    maxTargets := []
+    for definition in TowerXPDefinitions() {
+        section := TowerXPSectionName(definition.name)
+        if (Integer(IniRead(SettingsFile, section, "Tracked", 0)) != 1
+            || Integer(IniRead(SettingsFile, section, "StopTarget", 0)) != 1)
+            continue
+        targets.Push(definition.name)
+        if (Integer(IniRead(SettingsFile, section, "Level", 0)) >= definition.maxLevel)
+            maxTargets.Push(definition.name)
+    }
+    if (targets.Length = 0)
+        return {triggered: false, message: ""}
+
+    triggered := stopMode = "Any" ? maxTargets.Length > 0 : maxTargets.Length = targets.Length
+    if (!triggered)
+        return {triggered: false, message: ""}
+
+    names := ""
+    source := stopMode = "Any" ? maxTargets : targets
+    for index, name in source
+        names .= (index > 1 ? ", " : "") name
+    message := stopMode = "Any" ? names " reached level 20" : "all selected towers reached level 20 (" names ")"
+    return {triggered: true, message: message}
 }
 
 UpdateBreakdownStats(file, kind, displayName, matchResult, coinVal, gemVal, expVal, timeInSeconds) {

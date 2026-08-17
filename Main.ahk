@@ -39,9 +39,10 @@ if (A_PtrSize == 4) {
 #Include "%A_ScriptDir%\lib\Roblox.ahk"
 #Include "%A_ScriptDir%\lib\HyperSleep.ahk"
 #Include "%A_ScriptDir%\lib\ImageSearch\ImageSearch.ahk"
+#Include "%A_ScriptDir%\lib\TowerXP.ahk"
 #Include "%A_ScriptDir%\submacros\updater.ahk"
 
-ver := "1.3.2a-kronox.5"
+ver := "1.3.2a-kronox.6"
 ; Kronox's Edition checks only its own releases and never falls back to upstream builds.
 global ForkUpdateRepository := "kronoxhellstorm/tds-macro-kronox"
 
@@ -206,6 +207,8 @@ global PlayerRole := IniRead(SettingsFile, "Multiplayer", "PlayerRole", "Host")
 global LeaveCondition := IniRead(SettingsFile, "Multiplayer", "LeaveCondition", "Any")
 global HostName := IniRead(SettingsFile, "Multiplayer", "HostName", "...")
 global MultiplayerEnabled := IniRead(SettingsFile, "Multiplayer", "MultiplayerEnabled", 0)
+global TowerXPTrackerEnabled := Integer(IniRead(SettingsFile, "TowerXP", "Enabled", 0))
+global TowerXPStopMode := TowerXPStoredStopMode(IniRead(SettingsFile, "TowerXP", "StopMode", "Never"))
 
 global DefaultMouseSpeed := IniRead(SettingsFile, "Options", "DefaultMouseSpeed", "2")
 global MouseDelay := IniRead(SettingsFile, "Options", "MouseDelay", "10")
@@ -285,7 +288,9 @@ if (TimeScaleMode = "1.5x") {
 }
 
 global gamemap := "", difficulty := "", requiredTowers := ""
-global AbstractTowerSlot := 0
+global AbstractTowerSlots := [], AbstractTowerSlot := 0
+global AbstractPlacementLimit := Max(1, Min(4, Integer(IniRead(SettingsFile, "Options", "AbstractPlacementLimit", 4))))
+global AbstractPlacementMax := 0
 global StrategyHotbarSlotMap := Map(), StrategyHotbarRemapSummary := ""
 global autoChain := "OFF", autoCaravan := "OFF", autoDropTheBeat := "OFF"
 global Commander := false, AutoSkip := "ON", AbilitySpam := "ON"
@@ -808,6 +813,15 @@ MainGui.SetFont("s9 w400 c" ThemeColor("TextPrimary"))
 global AutoEquipCtrl := MainGui.Add("Checkbox", "x357 y190 vAutoEquip 0x200 Checked" AutoEquip, "Auto Equip Towers")
 AutoEquipCtrl.OnEvent("Click", EnableAutoEquip)
 
+MainGui.SetFont("s9 w400 c" ThemeColor("TextSecondary"))
+global AbstractCountLabel := MainGui.Add("Text", "x492 y188 w110 h22 Hidden 0x200 BackgroundTrans", "Active abstract:")
+MainGui.SetFont("s9 w400 c000000")
+global AbstractCountCtrl := MainGui.Add("DropDownList", "x605 y186 w55 Hidden", ["1", "2", "3", "4"])
+AbstractCountCtrl.Text := String(AbstractPlacementLimit)
+AbstractCountCtrl.OnEvent("Change", AbstractPlacementLimitChanged)
+if (Strategy1Path != "" && FileExist(Strategy1Path))
+    LoadAbstractPlacementProfile(Strategy1Path)
+
 MainGui.SetFont("s10 w600 c" ThemeColor("Accent"), "Segoe UI")
 global Tab1_Section2 := MainGui.Add("Text", "x30 y225 h22", "Community Strategies")
 global Tab1_Line2 := MainGui.Add("Progress", "x30 y248 w640 h1 Background" ThemeColor("BorderStrong"), 0)
@@ -1200,15 +1214,19 @@ MainGui.Add("Progress", "x360 y325 w320 h1 Hidden Background43242B vTab2_Line3",
 global Tab2_Line3 := MainGui["Tab2_Line3"]
 global RecAutoSkipCtrl := MainGui.Add("Checkbox", "x360 y338 h20 Hidden vRecAutoSkip", "Auto Skip Waves")
 global RecAbilitySpamCtrl := MainGui.Add("Checkbox", "x490 y338 h20 Hidden vRecAbilitySpam", "Abilities Spam")
-global RecAbstractSlotEnabledCtrl := MainGui.Add("Checkbox", "x360 y363 h20 Hidden vRecAbstractSlotEnabled", "Abstract XP tower")
+global RecAbstractSlotEnabledCtrl := MainGui.Add("Checkbox", "x360 y363 h20 Hidden vRecAbstractSlotEnabled", "Abstract XP towers")
 RecAbstractSlotEnabledCtrl.OnEvent("Click", UpdateRecAbstractSlotControls)
 MainGui.SetFont("s9 w400 cB79AA0")
-global RecAbstractSlotLabel := MainGui.Add("Text", "x505 y365 w70 h20 Hidden", "Hotbar slot:")
+global RecAbstractSlotLabel := MainGui.Add("Text", "x505 y365 w42 h20 Hidden", "Slots:")
 MainGui.SetFont("s9 w400 cFFFFFF")
-global RecAbstractSlotCtrl := MainGui.Add("DropDownList", "x575 y360 w55 Hidden Choose1 vRecAbstractSlot", ["1", "2", "3", "4", "5"])
-RecAbstractSlotCtrl.Enabled := false
+global RecAbstractSlotCtrls := []
+Loop 5 {
+    abstractSlotCtrl := MainGui.Add("Checkbox", "x" (545 + ((A_Index - 1) * 27)) " y362 w26 h20 Hidden", String(A_Index))
+    abstractSlotCtrl.Enabled := false
+    RecAbstractSlotCtrls.Push(abstractSlotCtrl)
+}
 MainGui.SetFont("s8 w400 cB79AA0")
-global RecAbstractSlotInfo := MainGui.Add("Text", "x360 y388 w320 h24 BackgroundTrans Hidden", "The selected slot accepts any equipped tower and keeps its recorded actions.")
+global RecAbstractSlotInfo := MainGui.Add("Text", "x360 y388 w320 h24 BackgroundTrans Hidden", "Each selected slot accepts any equipped tower and keeps its recorded actions.")
 global Tab2_Info := MainGui.Add("Link", "x360 y413 w320 h34 Hidden", "
 (
 Record a strategy and save it into a file. <a href="https://www.youtube.com/watch?v=j8Y5qHBaYOs&feature=youtu.be">Watch the tutorial</a>. Timescale is recommended for complex strategies.
@@ -1238,12 +1256,14 @@ HoverEffect_btns.Push(Tab2_Btn1)
 global Tab2Ctrls := [Tab2_Title, Tab2_Line1, Tab2_Lbl1, RecMapsD, Tab2_Lbl2, RecDiffCtrl,
     Tab2_Lbl3, RecModifiersCtrl, Tab2_Info2, Tab2_Lbl4, Tab2_Info1, Tab2_Line2, Tab2_Line3,
     RecAutoChainCtrl, RecAutoCaravanCtrl, RecAutoDropCtrl, RecAutoSkipCtrl, RecAbilitySpamCtrl,
-    RecAbstractSlotEnabledCtrl, RecAbstractSlotLabel, RecAbstractSlotCtrl, RecAbstractSlotInfo,
+    RecAbstractSlotEnabledCtrl, RecAbstractSlotLabel, RecAbstractSlotInfo,
     Tab2_Info, RecMoveCtrl, DIRECTIONTEXTCtrl, RecMoveDirCtrl, Tab2_Txt4, RecMoveDurCtrl,
     Tab2_Btn1, Tab2_Btn2]
 for ctrl in RecTowerLabels
     Tab2Ctrls.Push(ctrl)
 for ctrl in RecTowerCtrls
+    Tab2Ctrls.Push(ctrl)
+for ctrl in RecAbstractSlotCtrls
     Tab2Ctrls.Push(ctrl)
 
 ; tab 3 - MULTIPLAYER ===========================
@@ -1492,12 +1512,115 @@ UseVipServerCtrl.Value := (UseVipServer = "1" || UseVipServer = 1)
 global AlwaysOnTopCtrl := MainGui.Add("Checkbox", "x160 y465 Hidden", "Always On Top")
 AlwaysOnTopCtrl.Value := (AlwaysOnTop = "1" || AlwaysOnTop = 1)
 
+MainGui.SetFont("s10 w600 cEF2B2D", "Segoe UI")
+global TowerXPSection := MainGui.Add("Text", "x30 y505 w200 h22 Hidden BackgroundTrans", "Tower XP Tracker")
+global TowerXPLine := MainGui.Add("Progress", "x30 y528 w640 h1 Hidden Background43242B", 0)
+
+MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
+global TowerXPEnabledCtrl := MainGui.Add("Checkbox", "x30 y544 w150 h22 Hidden", "Enable XP tracking")
+TowerXPEnabledCtrl.Value := TowerXPTrackerEnabled
+TowerXPEnabledCtrl.OnEvent("Click", UpdateTowerXPControlState)
+
+MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
+global TowerXPStopModeLabelCtrl := MainGui.Add("Text", "x250 y547 w95 h18 Hidden", "Stop macro when:")
+MainGui.SetFont("s8 w400 c000000", "Segoe UI")
+global TowerXPStopModeCtrl := MainGui.Add("DropDownList", "x350 y542 w180 Hidden", ["Never", "Any selected tower", "All selected towers"])
+TowerXPStopModeCtrl.Text := TowerXPStopModeLabel(TowerXPStopMode)
+TowerXPStopModeCtrl.OnEvent("Change", UpdateTowerXPControlState)
+
+MainGui.SetFont("s8 w700 cFF6B6D", "Segoe UI")
+global TowerXPSkinWarning := MainGui.Add("Text", "x30 y578 w640 h36 Hidden Background180E11 +Border 0x200", "  DEFAULT SKINS REQUIRED — tracked towers MUST use their default skin. Alternate skins cannot be identified safely and will be ignored.")
+
+MainGui.SetFont("s8 w600 cB79AA0", "Segoe UI")
+global TowerXPHeaderTrack := MainGui.Add("Text", "x30 y624 w35 h18 Center Hidden", "USE")
+global TowerXPHeaderName := MainGui.Add("Text", "x70 y624 w110 h18 Hidden", "TOWER")
+global TowerXPHeaderLevel := MainGui.Add("Text", "x195 y624 w55 h18 Center Hidden", "LEVEL")
+global TowerXPHeaderXP := MainGui.Add("Text", "x268 y624 w82 h18 Center Hidden", "XP IN LEVEL")
+global TowerXPHeaderNext := MainGui.Add("Text", "x365 y624 w130 h18 Center Hidden", "NEXT LEVEL")
+global TowerXPHeaderStop := MainGui.Add("Text", "x525 y624 w135 h18 Center Hidden", "STOP TARGET")
+
+global TowerXPRows := []
+global TowerXPTrackCtrls := []
+global TowerXPLevelCtrls := []
+global TowerXPCurrentXPCtrls := []
+global TowerXPRequirementCtrls := []
+global TowerXPStopTargetCtrls := []
+global TowerXPSettingsCtrls := [TowerXPSection, TowerXPLine, TowerXPEnabledCtrl,
+    TowerXPStopModeLabelCtrl, TowerXPStopModeCtrl, TowerXPSkinWarning,
+    TowerXPHeaderTrack, TowerXPHeaderName, TowerXPHeaderLevel, TowerXPHeaderXP,
+    TowerXPHeaderNext, TowerXPHeaderStop]
+
+for towerIndex, towerDef in TowerXPDefinitions() {
+    rowY := 648 + ((towerIndex - 1) * 28)
+    section := TowerXPSectionName(towerDef.name)
+    tracked := Integer(IniRead(SettingsFile, section, "Tracked", 0))
+    level := Integer(IniRead(SettingsFile, section, "Level", 0))
+    currentXP := Integer(IniRead(SettingsFile, section, "XP", 0))
+    stopTarget := Integer(IniRead(SettingsFile, section, "StopTarget", 0))
+    normalized := TowerXPAdvance(towerDef, level, currentXP)
+
+    MainGui.SetFont("s8 w400 cFFFFFF", "Segoe UI")
+    trackCtrl := MainGui.Add("Checkbox", "x39 y" rowY " w18 h20 Hidden", "")
+    trackCtrl.Value := tracked
+    trackCtrl.OnEvent("Click", UpdateTowerXPControlState)
+    nameCtrl := MainGui.Add("Text", "x70 y" (rowY + 2) " w112 h18 Hidden", towerDef.name)
+
+    MainGui.SetFont("s8 w400 c000000", "Segoe UI")
+    levelCtrl := MainGui.Add("Edit", "x198 y" rowY " w48 h20 Center Number Limit2 Hidden", normalized.level)
+    levelCtrl.OnEvent("Change", UpdateTowerXPControlState)
+    xpCtrl := MainGui.Add("Edit", "x276 y" rowY " w68 h20 Center Number Limit6 Hidden", normalized.xp)
+    xpCtrl.OnEvent("Change", UpdateTowerXPControlState)
+
+    MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
+    requirementText := normalized.isMax ? "MAX LEVEL" : normalized.xp "/" normalized.nextRequired " XP"
+    requirementCtrl := MainGui.Add("Text", "x365 y" (rowY + 2) " w130 h18 Center Hidden", requirementText)
+    MainGui.SetFont("s8 w400 cFFFFFF", "Segoe UI")
+    targetCtrl := MainGui.Add("Checkbox", "x580 y" rowY " w18 h20 Hidden", "")
+    targetCtrl.Value := stopTarget
+    targetCtrl.OnEvent("Click", UpdateTowerXPControlState)
+
+    TowerXPTrackCtrls.Push(trackCtrl)
+    TowerXPLevelCtrls.Push(levelCtrl)
+    TowerXPCurrentXPCtrls.Push(xpCtrl)
+    TowerXPRequirementCtrls.Push(requirementCtrl)
+    TowerXPStopTargetCtrls.Push(targetCtrl)
+    TowerXPRows.Push({definition: towerDef, track: trackCtrl, name: nameCtrl, level: levelCtrl,
+        xp: xpCtrl, requirement: requirementCtrl, target: targetCtrl})
+    for rowCtrl in [trackCtrl, nameCtrl, levelCtrl, xpCtrl, requirementCtrl, targetCtrl]
+        TowerXPSettingsCtrls.Push(rowCtrl)
+}
+
 MainGui.SetFont("s11 w400 cFFFFFF")
 global Tab5_Btn1 := MainGui.Add("Text", "x30 y545 w645 h40 Center Background120B0D +Border 0x200 Hidden", "Save all settings")
 Tab5_Btn1.OnEvent("Click", SaveAllSettings)
 SetButtonRole(Tab5_Btn1, "Primary")
 
 HoverEffect_btns.Push(Tab5_Btn1)
+
+global SettingsScrollTrack := MainGui.Add("Progress", "x746 y95 w4 h430 Hidden Disabled Background2D171C", 0)
+global SettingsScrollThumb := MainGui.Add("Progress", "x746 y95 w4 h90 Hidden Disabled BackgroundEF2B2D", 0)
+global SettingsScrollOffset := 0
+global SettingsScrollMax := 0
+global SettingsBaseY := Map()
+global SettingsViewportTop := 92
+global SettingsViewportBottom := 532
+global SettingsScrollableCtrls := [Tab5_Section1, Tab5_Line1, Tab5_Lbl1, ChainKeyCtrl,
+    Tab5_Lbl2, BeatKeyCtrl, Tab5_Lbl3, CaravanKeyCtrl, Tab5_Lbl44, RaiseDeadKeyCtrl,
+    Tab5_Lbl55, HologramKeyCtrl, Tab5_Lbl56, RepoKeyCtrl, Tab5_Help11,
+    Tab5_Lbl99, CancelPlacementKeyCtrl, Tab5_LblUPG, UpgradeTowerGCtrl,
+    Tab5_LblUPGBTM, UpgradeTowerGBCtrl, Tab5_Section2, Tab5_Line2, UseUpgradeHCtrl,
+    Tab5_Help6, UseRestartBtnCtrl, Tab5_Help4, UsePlayAgainBtnCtrl, Tab5_Help5,
+    CheckTheMapCtrl, Tab5_Help7, UseNumbersForHotbarCtrl, CollectPlaytimeRewardsCtrl,
+    DebugConsoleCtrl, PotatoModeCtrl, Tab1_Lbl3, TimeScaleModeCtrl, MouseSpeedLbl,
+    MouseSpeedTxt, MouseSpeedUpDown, MouseDelayLbl, MouseDelayTxt, MouseDelayUpDown,
+    KeyDelayLbl, KeyDelayTxt, KeyDelayUpDown, Tab5_Section3, Tab5_Line3, PlcTowerTEXT,
+    PlaceTowerKeyCtrl, UpgTowerTEXT, UpgradeTowerKeyCtrl, AlignCamTEXT, AlignCameraKeyCtrl,
+    DjTrackTEXT, ChangeDJTrackKeyCtrl, SellTowTEXT, SellTowerKeyCtrl, DelRecTEXT,
+    DeleteTowerRecordingKeyCtrl, RecInputsTEXT, RecordInputsKeyCtrl, HoloTEXT, HoloKeyCtrl,
+    RaiseDeadTEXT, UseRaiseDeadKeyCtrl, Tab5_Line4, Tab5_Lbl4, VipLinkCtrl,
+    UseVipServerCtrl, AlwaysOnTopCtrl]
+for towerXPSettingCtrl in TowerXPSettingsCtrls
+    SettingsScrollableCtrls.Push(towerXPSettingCtrl)
 
 ; tab 6 - tools ===========================
 
@@ -1651,11 +1774,15 @@ global Editor_GeneralTitle := MainGui.Add("Text", "x30 y215 w180 h20 Hidden", "G
 MainGui.SetFont("s8 w600 cB79AA0", "Segoe UI")
 global Editor_MapLabel := MainGui.Add("Text", "x30 y242 w45 h22 Hidden 0x200", "MAP")
 global Editor_ModeLabel := MainGui.Add("Text", "x325 y242 w48 h22 Hidden 0x200", "MODE")
-global Editor_AbstractLabel := MainGui.Add("Text", "x565 y242 w82 h22 Hidden 0x200", "ABSTRACT")
+global Editor_AbstractLabel := MainGui.Add("Text", "x565 y242 w70 h22 Hidden 0x200", "ABSTRACT")
 MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
 global Editor_MapCtrl := MainGui.Add("ComboBox", "x75 y240 w235 Hidden", EditorSupportedMaps)
 global Editor_ModeCtrl := MainGui.Add("ComboBox", "x375 y240 w175 Hidden", EditorSupportedModes)
-global Editor_AbstractCtrl := MainGui.Add("DropDownList", "x647 y240 w83 Hidden Choose1", ["Off", "Slot 1", "Slot 2", "Slot 3", "Slot 4", "Slot 5"])
+global Editor_AbstractCtrls := []
+Loop 5 {
+    editorAbstractCtrl := MainGui.Add("Checkbox", "x" (635 + ((A_Index - 1) * 20)) " y242 w20 h20 Hidden", String(A_Index))
+    Editor_AbstractCtrls.Push(editorAbstractCtrl)
+}
 
 MainGui.SetFont("s9 w650 cEF2B2D", "Segoe UI")
 global Editor_HotbarTitle := MainGui.Add("Text", "x30 y275 w180 h20 Hidden", "TOWER HOTBAR")
@@ -1728,7 +1855,7 @@ HoverEffect_btns.Push(Editor_RenameBtn)
 
 global EditorCtrls := [Editor_Kicker, Editor_Title, Editor_Subtitle, Editor_FileLabel, Editor_PathCtrl,
     Editor_BrowseBtn, Editor_ReloadBtn, Editor_Status, Editor_Line1, Editor_GeneralTitle, Editor_MapLabel,
-    Editor_ModeLabel, Editor_AbstractLabel, Editor_MapCtrl, Editor_ModeCtrl, Editor_AbstractCtrl,
+    Editor_ModeLabel, Editor_AbstractLabel, Editor_MapCtrl, Editor_ModeCtrl,
     Editor_HotbarTitle, Editor_HotbarMode, Editor_Line2, Editor_OriginalLabel, Editor_EquippedLabel,
     Editor_HotbarHint, Editor_ModifiersTitle, Editor_Line3, Editor_Line4,
     Editor_AutoSkipCtrl, Editor_AdvancedSkipCtrl, Editor_AdvancedWavesLabel, Editor_AdvancedWavesCtrl,
@@ -1740,7 +1867,8 @@ for ctrl in EditorOriginalTowerCtrls
     EditorCtrls.Push(ctrl)
 for ctrl in EditorTowerCtrls
     EditorCtrls.Push(ctrl), ctrl.OnEvent("Change", EditorHotbarChanged)
-Editor_AbstractCtrl.OnEvent("Change", EditorAbstractSlotChanged)
+for ctrl in Editor_AbstractCtrls
+    EditorCtrls.Push(ctrl), ctrl.OnEvent("Click", EditorAbstractSlotChanged)
 for modifierName, ctrl in EditorModifierCtrls
     EditorCtrls.Push(ctrl)
 
@@ -1793,6 +1921,7 @@ YoutubeImg.OnEvent("Click", YouTubeLink)
 
 MainGui.Title := "Ultimate Macro Kronox's Edition"
 CenterLegacyTabLayouts()
+InitializeSettingsScroll()
 ApplyDarkControlThemes(MainGui)
 ApplyDarkControlThemes(ChildGui)
 ApplyDarkWindowTheme(MainGui.Hwnd)
@@ -2087,7 +2216,7 @@ HideAllTabContent() {
 
 CenterLegacyTabLayouts() {
     static centered := false
-    global MainWindowWidth, FrameX, Tab2Ctrls, TAB3, StatsCtrls, CreditsCtrls
+    global MainWindowWidth, FrameX, Tab2Ctrls, TAB3, StatsCtrls, CreditsCtrls, TowerXPSettingsCtrls
     if (centered)
         return
     centered := true
@@ -2100,7 +2229,8 @@ CenterLegacyTabLayouts() {
     controlGroups := [
         [Tab1_Section1, Tab1_Line1, Tab1_Lbl1, Strategy1Ctrl, Tab1_Btn1, Tab1_Btn2,
          Tab1_Lbl2, Strategy2Ctrl, Tab1_Btn3, Tab1_Btn4, RotateStrategiesCtrl, SwapAfterLbl,
-         SwapAmountCtrl, SwapUnitCtrl, AutoEquipCtrl, Tab1_Section2, Tab1_Line2, Tab1_Start, Tab1_Stop],
+         SwapAmountCtrl, SwapUnitCtrl, AutoEquipCtrl, AbstractCountLabel, AbstractCountCtrl,
+         Tab1_Section2, Tab1_Line2, Tab1_Start, Tab1_Stop],
         Tab2Ctrls,
         TAB3,
         [Tab4_Title, Tab4_Line1, Tab4_Lbl1, WebhookLinkCtrl, WebhookEnabledCtrl, Tab4_Line2,
@@ -2120,6 +2250,7 @@ CenterLegacyTabLayouts() {
          DelRecTEXT, DeleteTowerRecordingKeyCtrl, RecInputsTEXT, RecordInputsKeyCtrl, HoloTEXT,
          HoloKeyCtrl, RaiseDeadTEXT, UseRaiseDeadKeyCtrl, Tab5_Line4, Tab5_Lbl4, VipLinkCtrl,
          UseVipServerCtrl, AlwaysOnTopCtrl, Tab5_Btn1],
+        TowerXPSettingsCtrls,
         [Tools_Section, Tools_Section_Line, Tools_Info, Auto_COA, Auto_Spin, Auto_Consum],
         StatsCtrls,
         CreditsCtrls
@@ -2144,6 +2275,7 @@ ShowTabContent(tab) {
                      Tab1_Start, Tab1_Stop]
             ctrl.Visible := true
         EnableStratRotation()
+        UpdateAbstractPlacementControls()
         ShowChildGui()
     } else if (tab = "Tab2") {
         for ctrl in Tab2Ctrls
@@ -2201,6 +2333,10 @@ ShowTabContent(tab) {
         MouseDelayTxt.Value := MouseDelay
         KeyDelayUpDown.Value := KeyDelay
         KeyDelayTxt.Value := KeyDelay
+        UpdateTowerXPControlState()
+        SettingsScrollTrack.Visible := true
+        SettingsScrollThumb.Visible := true
+        ApplySettingsScroll()
 
     } else if (tab = "Tab6") {
         for ctrl in [Tools_Section, Tools_Section_Line, Tools_Info, Auto_COA, Auto_Spin, Auto_Consum]
@@ -2640,9 +2776,161 @@ DownloadStrat(ctrl, *) {
 }
 
 
+InitializeSettingsScroll() {
+    global SettingsScrollableCtrls, SettingsBaseY, SettingsScrollMax
+    global SettingsViewportBottom
+
+    SettingsBaseY := Map()
+    maxBottom := 0
+    for ctrl in SettingsScrollableCtrls {
+        try {
+            ctrl.GetPos(, &ctrlY, , &ctrlH)
+            SettingsBaseY[ctrl.Hwnd] := ctrlY
+            maxBottom := Max(maxBottom, ctrlY + ctrlH)
+        }
+    }
+    SettingsScrollMax := Max(0, maxBottom - SettingsViewportBottom + 12)
+}
+
+ApplySettingsScroll() {
+    global CurrentTab, SettingsScrollableCtrls, SettingsBaseY, SettingsScrollOffset
+    global SettingsScrollMax, SettingsViewportTop, SettingsViewportBottom
+    global SettingsScrollTrack, SettingsScrollThumb
+
+    if (!IsSet(CurrentTab) || CurrentTab != "Tab5")
+        return
+
+    SettingsScrollOffset := Max(0, Min(SettingsScrollOffset, SettingsScrollMax))
+    for ctrl in SettingsScrollableCtrls {
+        try {
+            ctrl.GetPos(, , , &ctrlH)
+            newY := SettingsBaseY[ctrl.Hwnd] - SettingsScrollOffset
+            ctrl.Move(, newY)
+            ctrl.Visible := (newY >= SettingsViewportTop && (newY + ctrlH) <= SettingsViewportBottom)
+        }
+    }
+
+    viewportHeight := SettingsViewportBottom - SettingsViewportTop
+    contentHeight := viewportHeight + SettingsScrollMax
+    thumbHeight := (contentHeight > 0) ? Max(55, Round(viewportHeight * viewportHeight / contentHeight)) : viewportHeight
+    travel := Max(0, viewportHeight - thumbHeight)
+    thumbY := SettingsViewportTop + ((SettingsScrollMax > 0) ? Round((SettingsScrollOffset / SettingsScrollMax) * travel) : 0)
+    SettingsScrollTrack.Move(, SettingsViewportTop, , viewportHeight)
+    SettingsScrollThumb.Move(, thumbY, , thumbHeight)
+    SettingsScrollTrack.Visible := SettingsScrollMax > 0
+    SettingsScrollThumb.Visible := SettingsScrollMax > 0
+}
+
+SettingsScrollBy(amount) {
+    global SettingsScrollOffset, SettingsScrollMax
+    newOffset := Max(0, Min(SettingsScrollOffset + amount, SettingsScrollMax))
+    if (newOffset = SettingsScrollOffset)
+        return
+    SettingsScrollOffset := newOffset
+    ApplySettingsScroll()
+}
+
+UpdateTowerXPControlState(*) {
+    global TowerXPEnabledCtrl, TowerXPStopModeCtrl, TowerXPRows
+
+    enabled := TowerXPEnabledCtrl.Value = 1
+    stopMode := TowerXPStoredStopMode(TowerXPStopModeCtrl.Text)
+    TowerXPStopModeCtrl.Enabled := enabled
+
+    for row in TowerXPRows {
+        tracked := row.track.Value = 1
+        row.track.Enabled := enabled
+        row.level.Enabled := enabled && tracked
+        row.xp.Enabled := enabled && tracked
+
+        levelText := Trim(row.level.Text)
+        xpText := Trim(row.xp.Text)
+        if (!RegExMatch(levelText, "^\d+$") || !RegExMatch(xpText, "^\d+$")) {
+            row.requirement.Text := "CHECK VALUES"
+        } else {
+            progress := TowerXPAdvance(row.definition, Integer(levelText), Integer(xpText))
+            row.requirement.Text := progress.isMax ? "MAX LEVEL" : progress.xp "/" progress.nextRequired " XP"
+            row.xp.Enabled := enabled && tracked && !progress.isMax
+        }
+
+        if (!tracked)
+            row.target.Value := 0
+        row.target.Enabled := enabled && tracked && stopMode != "Never"
+    }
+}
+
+CollectTowerXPSettings() {
+    global TowerXPEnabledCtrl, TowerXPStopModeCtrl, TowerXPRows
+
+    config := {enabled: TowerXPEnabledCtrl.Value = 1,
+        stopMode: TowerXPStoredStopMode(TowerXPStopModeCtrl.Text), entries: []}
+    targetCount := 0
+
+    for row in TowerXPRows {
+        levelText := Trim(row.level.Text)
+        xpText := Trim(row.xp.Text)
+        if (!RegExMatch(levelText, "^\d+$") || Integer(levelText) > row.definition.maxLevel) {
+            MsgBox(row.definition.name " level must be a whole number from 0 to " row.definition.maxLevel ".",
+                "Tower XP settings", 0x10)
+            return false
+        }
+        if (!RegExMatch(xpText, "^\d+$")) {
+            MsgBox(row.definition.name " XP must be a non-negative whole number.", "Tower XP settings", 0x10)
+            return false
+        }
+
+        progress := TowerXPAdvance(row.definition, Integer(levelText), Integer(xpText))
+        tracked := row.track.Value = 1
+        stopTarget := row.target.Value = 1
+        if (stopTarget && !tracked) {
+            MsgBox(row.definition.name " is a stop target but is not enabled for tracking.", "Tower XP settings", 0x10)
+            return false
+        }
+        if (stopTarget)
+            targetCount += 1
+        config.entries.Push({definition: row.definition, tracked: tracked, level: progress.level,
+            xp: progress.xp, stopTarget: stopTarget})
+    }
+
+    if (config.enabled && config.stopMode != "Never" && targetCount = 0) {
+        MsgBox("Choose at least one tracked tower as a stop target, or set Stop macro when to Never.",
+            "Tower XP settings", 0x10)
+        return false
+    }
+    return config
+}
+
+PersistTowerXPSettings(config) {
+    global SettingsFile, TowerXPTrackerEnabled, TowerXPStopMode, TowerXPRows
+
+    TowerXPTrackerEnabled := config.enabled ? 1 : 0
+    TowerXPStopMode := config.stopMode
+    IniWrite(TowerXPTrackerEnabled, SettingsFile, "TowerXP", "Enabled")
+    IniWrite(TowerXPStopMode, SettingsFile, "TowerXP", "StopMode")
+
+    for index, entry in config.entries {
+        section := TowerXPSectionName(entry.definition.name)
+        IniWrite(entry.tracked ? 1 : 0, SettingsFile, section, "Tracked")
+        IniWrite(entry.level, SettingsFile, section, "Level")
+        IniWrite(entry.xp, SettingsFile, section, "XP")
+        IniWrite(entry.stopTarget ? 1 : 0, SettingsFile, section, "StopTarget")
+        TowerXPRows[index].level.Text := entry.level
+        TowerXPRows[index].xp.Text := entry.xp
+    }
+    UpdateTowerXPControlState()
+}
+
 OnMouseWheel(wp, lp, msg, hwnd) {
-    global ChildHwnd, ChildGui
+    global ChildHwnd, ChildGui, CurrentTab, MainGui
     MouseGetPos(, , &maxH, &ctrlH, 2)
+
+    if (CurrentTab = "Tab5" && maxH = MainGui.Hwnd) {
+        wheelDelta := (wp >> 16) & 0xFFFF
+        if (wheelDelta > 0x7FFF)
+            wheelDelta -= 0x10000
+        SettingsScrollBy(wheelDelta > 0 ? -60 : 60)
+        return
+    }
 
     parentH := (ctrlH != "") ? DllCall("GetParent", "Ptr", ctrlH, "Ptr") : 0
     ch := ChildGui.Hwnd
@@ -2731,8 +3019,22 @@ EnableAutoEquip(*) {
 }
 
 UpdateRecAbstractSlotControls(*) {
-    v := MainGui.Submit(false)
-    RecAbstractSlotCtrl.Enabled := v.RecAbstractSlotEnabled = 1
+    global RecAbstractSlotEnabledCtrl, RecAbstractSlotCtrls
+    enabled := RecAbstractSlotEnabledCtrl.Value = 1
+    for slotCtrl in RecAbstractSlotCtrls
+        slotCtrl.Enabled := enabled
+}
+
+CollectRecAbstractSlots() {
+    global RecAbstractSlotEnabledCtrl, RecAbstractSlotCtrls
+    if (RecAbstractSlotEnabledCtrl.Value != 1)
+        return []
+    slots := []
+    for slot, slotCtrl in RecAbstractSlotCtrls {
+        if (slotCtrl.Value = 1)
+            slots.Push(slot)
+    }
+    return slots
 }
 
 NormalizeAbstractTowerSlot(value) {
@@ -2742,6 +3044,140 @@ NormalizeAbstractTowerSlot(value) {
         return 0
     }
     return (slot >= 1 && slot <= 5) ? slot : 0
+}
+
+NormalizeAbstractTowerSlots(value) {
+    selected := Map()
+    values := IsObject(value) ? value : StrSplit(String(value), ",")
+    for rawValue in values {
+        slot := NormalizeAbstractTowerSlot(Trim(String(rawValue)))
+        if (slot > 0)
+            selected[slot] := true
+    }
+
+    slots := []
+    Loop 5 {
+        if (selected.Has(A_Index))
+            slots.Push(A_Index)
+    }
+    return slots
+}
+
+AbstractTowerSlotsToText(slots) {
+    normalizedSlots := NormalizeAbstractTowerSlots(slots)
+    text := ""
+    for index, slot in normalizedSlots
+        text .= (index > 1 ? ", " : "") slot
+    return text
+}
+
+SetAbstractTowerSlots(value) {
+    global AbstractTowerSlots, AbstractTowerSlot
+    AbstractTowerSlots := NormalizeAbstractTowerSlots(value)
+    AbstractTowerSlot := AbstractTowerSlots.Length > 0 ? AbstractTowerSlots[1] : 0
+    return AbstractTowerSlots
+}
+
+IsAbstractTowerSlot(slot) {
+    global AbstractTowerSlots
+    normalizedSlot := NormalizeAbstractTowerSlot(slot)
+    for abstractSlot in AbstractTowerSlots {
+        if (abstractSlot = normalizedSlot)
+            return true
+    }
+    return false
+}
+
+ActiveAbstractTowerSlots() {
+    global AbstractTowerSlots, AbstractPlacementLimit, AbstractPlacementMax
+    activeSlots := []
+    availableCount := AbstractTowerSlots.Length
+    if (AbstractPlacementMax > 0)
+        availableCount := Min(availableCount, AbstractPlacementMax)
+    activeCount := Min(availableCount, Max(0, AbstractPlacementLimit))
+    Loop activeCount
+        activeSlots.Push(AbstractTowerSlots[A_Index])
+    return activeSlots
+}
+
+IsActiveAbstractTowerSlot(slot) {
+    normalizedSlot := NormalizeAbstractTowerSlot(slot)
+    for activeSlot in ActiveAbstractTowerSlots() {
+        if (activeSlot = normalizedSlot)
+            return true
+    }
+    return false
+}
+
+UpdateAbstractPlacementControls() {
+    global AbstractTowerSlots, AbstractPlacementLimit, AbstractPlacementMax
+    global AbstractCountLabel, AbstractCountCtrl, CurrentTab
+
+    if (!IsSet(AbstractCountLabel) || !IsSet(AbstractCountCtrl))
+        return
+
+    availableCount := Min(4, AbstractTowerSlots.Length)
+    if (AbstractPlacementMax > 0)
+        availableCount := Min(availableCount, AbstractPlacementMax)
+    if (availableCount <= 0) {
+        AbstractCountLabel.Visible := false
+        AbstractCountCtrl.Visible := false
+        return
+    }
+
+    AbstractPlacementLimit := Max(1, Min(AbstractPlacementLimit, availableCount))
+    AbstractCountCtrl.Delete()
+    choices := []
+    Loop availableCount
+        choices.Push(String(A_Index))
+    AbstractCountCtrl.Add(choices)
+    AbstractCountCtrl.Choose(AbstractPlacementLimit)
+
+    shouldShow := availableCount > 1 && IsSet(CurrentTab) && CurrentTab = "Tab1"
+    AbstractCountLabel.Visible := shouldShow
+    AbstractCountCtrl.Visible := shouldShow
+}
+
+AbstractPlacementLimitChanged(ctrl, *) {
+    global AbstractPlacementLimit, SettingsFile
+    selectedCount := IsNumber(ctrl.Text) ? Integer(ctrl.Text) : ctrl.Value
+    AbstractPlacementLimit := Max(1, Min(4, selectedCount))
+    IniWrite(AbstractPlacementLimit, SettingsFile, "Options", "AbstractPlacementLimit")
+    UpdateAbstractPlacementControls()
+}
+
+ReadStrategyAbstractTowerSlots(path, towerText := "") {
+    configuredSlots := IniRead(path, "Settings", "abstractSlots", "")
+    if (Trim(configuredSlots) = "")
+        configuredSlots := IniRead(path, "Settings", "abstractSlot", "")
+    slots := NormalizeAbstractTowerSlots(configuredSlots)
+    if (slots.Length > 0)
+        return slots
+
+    for index, towerName in SplitTowerNames(towerText) {
+        if (index <= 5 && NormalizeTowerIdentity(towerName) = "abstract")
+            slots.Push(index)
+    }
+    return NormalizeAbstractTowerSlots(slots)
+}
+
+LoadAbstractPlacementProfile(path) {
+    global AbstractTowerSlots, AbstractPlacementMax
+
+    if (path = "" || !FileExist(path)) {
+        SetAbstractTowerSlots([])
+        AbstractPlacementMax := 0
+        UpdateAbstractPlacementControls()
+        return
+    }
+
+    towerText := IniRead(path, "Settings", "requiredTowers", "")
+    SetAbstractTowerSlots(ReadStrategyAbstractTowerSlots(path, towerText))
+    placementMaxSetting := IniRead(path, "Settings", "abstractPlacementMax", AbstractTowerSlots.Length)
+    AbstractPlacementMax := IsNumber(placementMaxSetting)
+        ? Max(0, Min(4, Integer(placementMaxSetting)))
+        : Min(4, AbstractTowerSlots.Length)
+    UpdateAbstractPlacementControls()
 }
 
 SplitTowerNames(towerText) {
@@ -2886,9 +3322,9 @@ ParseAdvancedWaveSelection(waveText) {
     return {ok: true, canonical: canonical, waves: waveSet, message: ""}
 }
 
-BuildAbstractRequiredTowers(towers, abstractSlot) {
-    abstractSlot := NormalizeAbstractTowerSlot(abstractSlot)
-    if (abstractSlot = 0)
+BuildAbstractRequiredTowers(towers, abstractSlots) {
+    abstractSlots := NormalizeAbstractTowerSlots(abstractSlots)
+    if (abstractSlots.Length = 0)
         return {ok: true, value: Trim(towers, " `t,")}
 
     towerList := []
@@ -2898,15 +3334,17 @@ BuildAbstractRequiredTowers(towers, abstractSlot) {
             towerList.Push(towerName)
     }
 
-    if (abstractSlot > towerList.Length) {
+    highestSlot := abstractSlots[abstractSlots.Length]
+    if (highestSlot > towerList.Length) {
         return {
             ok: false,
             value: "",
-            message: "Abstract hotbar slot " abstractSlot " has no matching entry in the Towers list. Add a placeholder tower name for every slot through slot " abstractSlot "."
+            message: "Abstract hotbar slot " highestSlot " has no matching entry in the Towers list. Add a placeholder tower name for every slot through slot " highestSlot "."
         }
     }
 
-    towerList[abstractSlot] := "Abstract"
+    for abstractSlot in abstractSlots
+        towerList[abstractSlot] := "Abstract"
     result := ""
     for index, towerName in towerList
         result .= (index = 1 ? "" : ", ") towerName
@@ -2940,7 +3378,7 @@ EditorReloadStrategy(ctrl := 0, *) {
 
 EditorLoadStrategy(path) {
     global EditorStrategyPath, Editor_PathCtrl, Editor_Status, Editor_MapCtrl, Editor_ModeCtrl
-    global Editor_AbstractCtrl, EditorTowerCtrls, EditorOriginalTowerCtrls, EditorModifierCtrls, EditorModifierNames
+    global Editor_AbstractCtrls, EditorTowerCtrls, EditorOriginalTowerCtrls, EditorModifierCtrls, EditorModifierNames
     global EditorRecordedTowerText
     global Editor_AutoSkipCtrl, Editor_AdvancedSkipCtrl, Editor_AdvancedWavesCtrl
     global Editor_AbilitySpamCtrl, Editor_AutoChainCtrl, Editor_AutoCaravanCtrl, Editor_AutoDropCtrl
@@ -2967,7 +3405,7 @@ EditorLoadStrategy(path) {
         if (!arrangedRemap.valid)
             arrangedTowerText := recordedTowerText
         modifierText := IniRead(path, "Settings", "modifiers", "")
-        abstractSlot := NormalizeAbstractTowerSlot(IniRead(path, "Settings", "abstractSlot", 0))
+        abstractSlots := ReadStrategyAbstractTowerSlots(path, towerText)
 
         towerList := []
         for rawTower in StrSplit(towerText, ",") {
@@ -2978,15 +3416,6 @@ EditorLoadStrategy(path) {
         recordedTowerList := SplitTowerNames(recordedTowerText)
         arrangedTowerList := SplitTowerNames(arrangedTowerText)
 
-        if (abstractSlot = 0) {
-            for index, towerName in towerList {
-                if (StrLower(towerName) = "abstract") {
-                    abstractSlot := index <= 5 ? index : 0
-                    break
-                }
-            }
-        }
-
         Editor_MapCtrl.Text := mapName
         Editor_ModeCtrl.Text := modeName
         EditorRecordedTowerText := TowerListToText(recordedTowerList)
@@ -2995,9 +3424,14 @@ EditorLoadStrategy(path) {
         EditorRefreshOriginalTowerStyles()
         for index, towerCtrl in EditorTowerCtrls
             towerCtrl.Text := index <= towerList.Length ? towerList[index] : ""
-        Editor_AbstractCtrl.Choose(abstractSlot + 1)
-        if (abstractSlot > 0 && abstractSlot <= EditorTowerCtrls.Length)
-            EditorTowerCtrls[abstractSlot].Text := "Abstract"
+        for slot, abstractCtrl in Editor_AbstractCtrls
+            abstractCtrl.Value := 0
+        for abstractSlot in abstractSlots {
+            if (abstractSlot <= EditorTowerCtrls.Length) {
+                Editor_AbstractCtrls[abstractSlot].Value := 1
+                EditorTowerCtrls[abstractSlot].Text := "Abstract"
+            }
+        }
         EditorHotbarChanged()
 
         selectedModifiers := Map()
@@ -3190,24 +3624,23 @@ EditorOriginalTowerForSlot(slot) {
 }
 
 EditorAbstractSlotChanged(ctrl, *) {
-    global EditorSyncingAbstract, Editor_AbstractCtrl, EditorTowerCtrls
+    global EditorSyncingAbstract, Editor_AbstractCtrls, EditorTowerCtrls
     if (EditorSyncingAbstract)
         return
 
     EditorSyncingAbstract := true
-    desiredSlot := Editor_AbstractCtrl.Value - 1
     for slot, towerCtrl in EditorTowerCtrls {
-        if (NormalizeTowerIdentity(towerCtrl.Text) = "abstract" && slot != desiredSlot)
+        if (Editor_AbstractCtrls[slot].Value = 1)
+            towerCtrl.Text := "Abstract"
+        else if (NormalizeTowerIdentity(towerCtrl.Text) = "abstract")
             towerCtrl.Text := EditorOriginalTowerForSlot(slot)
     }
-    if (desiredSlot > 0 && desiredSlot <= EditorTowerCtrls.Length)
-        EditorTowerCtrls[desiredSlot].Text := "Abstract"
     EditorSyncingAbstract := false
     EditorHotbarChanged()
 }
 
 EditorSyncAbstractSelection(changedCtrl := 0) {
-    global EditorSyncingAbstract, Editor_AbstractCtrl, EditorTowerCtrls
+    global EditorSyncingAbstract, Editor_AbstractCtrls, EditorTowerCtrls
     if (EditorSyncingAbstract)
         return
 
@@ -3222,23 +3655,23 @@ EditorSyncAbstractSelection(changedCtrl := 0) {
         }
     }
 
-    if (changedSlot > 0 && NormalizeTowerIdentity(EditorTowerCtrls[changedSlot].Text) = "abstract") {
-        for slot, towerCtrl in EditorTowerCtrls {
-            if (slot != changedSlot && NormalizeTowerIdentity(towerCtrl.Text) = "abstract")
-                towerCtrl.Text := EditorOriginalTowerForSlot(slot)
-        }
-        Editor_AbstractCtrl.Choose(changedSlot + 1)
-    } else {
-        abstractSlot := 0
-        for slot, towerCtrl in EditorTowerCtrls {
-            if (NormalizeTowerIdentity(towerCtrl.Text) = "abstract") {
-                abstractSlot := slot
-                break
-            }
-        }
-        Editor_AbstractCtrl.Choose(abstractSlot + 1)
+    if (changedSlot > 0)
+        Editor_AbstractCtrls[changedSlot].Value := NormalizeTowerIdentity(EditorTowerCtrls[changedSlot].Text) = "abstract" ? 1 : 0
+    else {
+        for slot, towerCtrl in EditorTowerCtrls
+            Editor_AbstractCtrls[slot].Value := NormalizeTowerIdentity(towerCtrl.Text) = "abstract" ? 1 : 0
     }
     EditorSyncingAbstract := false
+}
+
+EditorSelectedAbstractSlots() {
+    global Editor_AbstractCtrls
+    slots := []
+    for slot, abstractCtrl in Editor_AbstractCtrls {
+        if (abstractCtrl.Value = 1)
+            slots.Push(slot)
+    }
+    return slots
 }
 
 EditorHotbarChanged(changedCtrl := 0, *) {
@@ -3339,7 +3772,7 @@ EditorSetStatus(message, isError := false) {
 }
 
 EditorCollectSettings() {
-    global EditorStrategyPath, Editor_MapCtrl, Editor_ModeCtrl, Editor_AbstractCtrl
+    global EditorStrategyPath, Editor_MapCtrl, Editor_ModeCtrl, Editor_AbstractCtrls
     global EditorTowerCtrls, EditorModifierCtrls, EditorModifierNames
     global EditorRecordedTowerText
     global Editor_AutoSkipCtrl, Editor_AdvancedSkipCtrl, Editor_AdvancedWavesCtrl
@@ -3372,16 +3805,22 @@ EditorCollectSettings() {
     if (arrangedTowers.Length != towers.Length)
         return {ok: false, message: "Original and Equipped must contain the same number of occupied slots."}
 
-    abstractSlot := Editor_AbstractCtrl.Value - 1
+    abstractSlots := EditorSelectedAbstractSlots()
+    if (abstractSlots.Length > 4)
+        return {ok: false, message: "A strategy can use at most four abstract XP tower slots."}
+    abstractSlotMap := Map()
+    for abstractSlot in abstractSlots
+        abstractSlotMap[abstractSlot] := true
     for index, towerName in towers {
-        if (StrLower(towerName) = "abstract" && index != abstractSlot) {
-            return {ok: false, message: "Slot " index " still contains Abstract. Replace it with its real tower or select Slot " index " as the Abstract slot."}
+        if (StrLower(towerName) = "abstract" && !abstractSlotMap.Has(index)) {
+            return {ok: false, message: "Slot " index " still contains Abstract. Replace it with its real tower or enable slot " index " in the Abstract selector."}
         }
     }
-    if (abstractSlot > towers.Length)
-        return {ok: false, message: "The selected Abstract slot is blank. Add a tower entry through slot " abstractSlot "."}
-    if (abstractSlot > 0)
+    for abstractSlot in abstractSlots {
+        if (abstractSlot > towers.Length)
+            return {ok: false, message: "Abstract slot " abstractSlot " is blank. Add a tower entry through that slot."}
         towers[abstractSlot] := "Abstract"
+    }
 
     towerText := TowerListToText(towers)
     arrangedTowerText := TowerListToText(arrangedTowers)
@@ -3420,7 +3859,8 @@ EditorCollectSettings() {
             arrangedTowers: arrangedTowerText,
             hotbarRemap: hotbarRemapEnabled ? "ON" : "OFF",
             hotbarRemapSummary: hotbarRemapEnabled ? hotbarRemap.summary : "",
-            abstractSlot: abstractSlot,
+            abstractSlot: abstractSlots.Length > 0 ? abstractSlots[1] : 0,
+            abstractSlots: AbstractTowerSlotsToText(abstractSlots),
             modifiers: modifierText,
             autoSkip: Editor_AutoSkipCtrl.Value ? "ON" : "OFF",
             advancedAutoSkip: Editor_AdvancedSkipCtrl.Value ? "ON" : "OFF",
@@ -3441,6 +3881,7 @@ EditorWriteSettings(path, data) {
     IniWrite(data.arrangedTowers, path, "Settings", "arrangedTowers")
     IniWrite(data.hotbarRemap, path, "Settings", "hotbarRemap")
     IniWrite(data.abstractSlot, path, "Settings", "abstractSlot")
+    IniWrite(data.abstractSlots, path, "Settings", "abstractSlots")
     IniWrite(data.modifiers, path, "Settings", "modifiers")
     IniWrite(data.autoChain, path, "Settings", "autoChain")
     IniWrite(data.autoCaravan, path, "Settings", "autoCaravan")
@@ -3607,7 +4048,7 @@ SelectStrat1(ctrl, *) {
         Strategy1Ctrl.Value := f
         Strategy1Path := f
         IniWrite(f, SettingsFile, "Options", "Strategy1")
-        LoadStrategyFile(f)
+        LoadAbstractPlacementProfile(f)
     }
 }
 SelectStrat2(ctrl, *) {
@@ -3629,6 +4070,7 @@ ClearStrat1(ctrl, *) {
     Strategy1Ctrl.Value := ""
     Strategy1Path := ""
     IniWrite(" ", SettingsFile, "Options", "Strategy1")
+    LoadAbstractPlacementProfile("")
 }
 ClearStrat2(ctrl, *) {
     global Strategy2Path
@@ -3640,6 +4082,8 @@ SaveStrat1(ctrl, *) {
     global Strategy1Path, Strategy1Ctrl
     Strategy1Path := Strategy1Ctrl.Text
     IniWrite(Strategy1Ctrl.Text, SettingsFile, "Options", "Strategy1")
+    if (FileExist(Strategy1Path))
+        LoadAbstractPlacementProfile(Strategy1Path)
 }
 
 SaveStrat2(ctrl, *) {
@@ -3657,7 +4101,7 @@ StartStrategy(ctrl, *) {
 
     global RunningStrategy, CurrentRotationIndex, gamemap, difficulty, requiredTowers, modifiers
     global autoChain, autoCaravan, autoDropTheBeat, AutoSkip, AbilitySpam, MoveEnabled, MoveDirection, MoveDuration
-    global AutorunStartTime, CurrentStratStartTime, AbstractTowerSlot
+    global AutorunStartTime, CurrentStratStartTime, AbstractTowerSlots, AbstractTowerSlot, AbstractPlacementLimit
 
     v := MainGui.Submit(false)
     IniWrite(v.Strategy1, SettingsFile, "Options", "Strategy1")
@@ -3725,10 +4169,13 @@ StartStrategy(ctrl, *) {
 
     if (requiredTowers != "") {
         requiredMessage := requiredTowers
-        if (AbstractTowerSlot > 0) {
-            requiredMessage .= "`n`nABSTRACT XP SLOT: " AbstractTowerSlot
-            requiredMessage .= "`nEquip the tower you want to level in hotbar slot " AbstractTowerSlot "."
-            requiredMessage .= "`nAuto Equip is skipped for this strategy so that tower is never removed."
+        if (AbstractTowerSlots.Length > 0) {
+            abstractSlotText := AbstractTowerSlotsToText(ActiveAbstractTowerSlots())
+            requiredMessage .= "`n`nACTIVE ABSTRACT XP SLOTS: " abstractSlotText
+            requiredMessage .= "`nEquip the towers you want to level in hotbar slots " abstractSlotText "."
+            if (AbstractPlacementLimit < AbstractTowerSlots.Length)
+                requiredMessage .= "`nThe remaining configured abstract slots are disabled and may be left empty."
+            requiredMessage .= "`nAuto Equip is skipped for this strategy so those towers are never removed."
         }
         ModernMsgBox("Required Towers", requiredMessage, "OK")
     }
@@ -3814,8 +4261,8 @@ StopStrategy(ctrl, *) {
 StartRecording(ctrl, *) {
     global Recording, gamemap, difficulty, requiredTowers, modifiers, autoChain, autoCaravan
     global autoDropTheBeat, AutoSkip, AbilitySpam, MoveEnabled, MoveDirection, MoveDuration
-    global Commander, RecordedSteps, Towers, MacroRecording, GuiTitleCtrl, AbstractTowerSlot
-    global Tab2_Btn1, Tab2_Btn2, HoverEffect_btns, RecTowerCtrls
+    global Commander, RecordedSteps, Towers, MacroRecording, GuiTitleCtrl, AbstractTowerSlots, AbstractTowerSlot
+    global Tab2_Btn1, Tab2_Btn2, HoverEffect_btns, RecTowerCtrls, RecAbstractSlotEnabledCtrl
 
     if (Recording)
         return
@@ -3833,8 +4280,16 @@ StartRecording(ctrl, *) {
         return
     }
 
-    selectedAbstractSlot := v.RecAbstractSlotEnabled ? NormalizeAbstractTowerSlot(v.RecAbstractSlot) : 0
-    abstractTowerList := BuildAbstractRequiredTowers(towerSlots.value, selectedAbstractSlot)
+    selectedAbstractSlots := CollectRecAbstractSlots()
+    if (RecAbstractSlotEnabledCtrl.Value = 1 && selectedAbstractSlots.Length = 0) {
+        MsgBox("Select at least one abstract hotbar slot, or turn Abstract XP towers off.", "Abstract XP towers", 0x1030)
+        return
+    }
+    if (selectedAbstractSlots.Length > 4) {
+        MsgBox("A strategy can use at most four abstract XP tower slots.", "Abstract XP towers", 0x1030)
+        return
+    }
+    abstractTowerList := BuildAbstractRequiredTowers(towerSlots.value, selectedAbstractSlots)
     if (!abstractTowerList.ok) {
         MsgBox(abstractTowerList.message, "Abstract XP tower", 0x1030)
         return
@@ -3882,7 +4337,7 @@ StartRecording(ctrl, *) {
     gamemap := v.RecMaps
     difficulty := v.RecDifficulty
     requiredTowers := abstractTowerList.value
-    AbstractTowerSlot := selectedAbstractSlot
+    SetAbstractTowerSlots(selectedAbstractSlots)
     modifiers := v.RecModifiers
     autoChain := v.RecAutoChain ? "ON" : "OFF"
     autoCaravan := v.RecAutoCaravan ? "ON" : "OFF"
@@ -3908,7 +4363,7 @@ StopRecord(ctrl, *) {
     global Recording, MacroRecording, InputHookObj, MacroSteps, RecordedSteps
     global gamemap, difficulty, requiredTowers, modifiers
     global autoChain, autoCaravan, autoDropTheBeat, AutoSkip, AbilitySpam, MoveEnabled, MoveDirection, MoveDuration
-    global AbstractTowerSlot
+    global AbstractTowerSlots, AbstractTowerSlot
     global GuiTitleCtrl, Strategy1Ctrl, RecordingsDir
     global Tab2_Btn1, Tab2_Btn2, HoverEffect_btns
 
@@ -3983,6 +4438,7 @@ StopRecord(ctrl, *) {
 
         FileAppend("[Settings]`nmap=" gamemap "`ndifficulty=" difficulty "`nrequiredTowers=" requiredTowers
             . "`nabstractSlot=" AbstractTowerSlot
+            . "`nabstractSlots=" AbstractTowerSlotsToText(AbstractTowerSlots)
             . "`nmodifiers=" Join(modifiers)
             . "`nautoChain=" autoChain "`nautoCaravan=" autoCaravan "`nautoDropTheBeat=" autoDropTheBeat
             . "`nautoSkip=" AutoSkip "`nabilitySpam=" AbilitySpam "`nmoveEnabled=" MoveEnabled "`nmoveDirection=" MoveDirection
@@ -5009,6 +5465,10 @@ SaveAllSettings(ctrl, *) {
     global DefaultMouseSpeed, MouseDelay, KeyDelay
     global HoloKey, RaiseDeadKey, UseRaiseDeadKey, HologramKey, RepoKey, CollectPlaytimeRewards, UpgradeTowerGKey, UpgradeTowerGBKey, UseHForUpgrade, UseNumbersForHotbar
 
+    towerXPConfig := CollectTowerXPSettings()
+    if (!IsObject(towerXPConfig))
+        return
+
     tempChainKey := SubStr(RegExReplace(ChainKeyCtrl.Value, "\s", ""), 1, 1)
     tempBeatKey := SubStr(RegExReplace(BeatKeyCtrl.Value, "\s", ""), 1, 1)
     tempCaravanKey := SubStr(RegExReplace(CaravanKeyCtrl.Value, "\s", ""), 1, 1)
@@ -5153,6 +5613,8 @@ SaveAllSettings(ctrl, *) {
     IniWrite(RecordInputsKey, SettingsFile, "RecordingHotkeys", "RecordInputsKey")
     IniWrite(UseRaiseDeadKey, SettingsFile, "RecordingHotkeys", "RaiseDeadKey")
     IniWrite(HoloKey, SettingsFile, "RecordingHotkeys", "HoloKey")
+
+    PersistTowerXPSettings(towerXPConfig)
 
     if (TimeScaleMode = "1.5x") {
         UseTimeScale := true
@@ -5345,7 +5807,7 @@ LoadStrategyFile(file) {
     global StrategyHotbarSlotMap, StrategyHotbarRemapSummary
     global modifiers, Commander, StrategyWidth, StrategyHeight
     global CloneFailurePolicy, EngineerCloneMaxAttempts
-    global AbstractTowerSlot
+    global AbstractTowerSlots, AbstractTowerSlot, AbstractPlacementMax, AbstractPlacementLimit
 
     Towers := Map()
     RecordedSteps := []
@@ -5371,7 +5833,7 @@ LoadStrategyFile(file) {
             LogToConsole("Hotbar swap disabled: " hotbarRemap.message, true)
         }
     }
-    AbstractTowerSlot := NormalizeAbstractTowerSlot(IniRead(file, "Settings", "abstractSlot", "0"))
+    LoadAbstractPlacementProfile(file)
     autoChain := IniRead(file, "Settings", "autoChain", "OFF")
     autoCaravan := IniRead(file, "Settings", "autoCaravan", "OFF")
     autoDropTheBeat := IniRead(file, "Settings", "autoDropTheBeat", "OFF")
@@ -5456,7 +5918,7 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
     global unfocusX, unfocusY, UseTimeScale, TimeScaleMultiplier, TimeScaleMode
     global SettingsFile, requiredTowers, modifiers, LastOpenedTowerID
     global LastSkipCheck, SKIP_CHECK_INTERVAL, AutorunStartTime, StateFile
-    global WebhookEnabled, CurrentStratStartTime, CurrentRunCount, gamemap, AbstractTowerSlot
+    global WebhookEnabled, CurrentStratStartTime, CurrentRunCount, gamemap, AbstractTowerSlots, AbstractTowerSlot
     global StrategyHotbarRemapSummary
 
     if (RunningStrategy != true)
@@ -5501,8 +5963,8 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
     LogToConsole("Mode = " difficulty)
     LogToConsole("Timescale = " TimeScaleMode)
     LogToConsole("Required Towers: " requiredTowers)
-    if (AbstractTowerSlot > 0)
-        LogToConsole("Abstract XP tower: hotbar slot " AbstractTowerSlot " (Auto Equip protected)")
+    if (AbstractTowerSlots.Length > 0)
+        LogToConsole("Abstract XP towers: active slots " AbstractTowerSlotsToText(ActiveAbstractTowerSlots()) " of " AbstractTowerSlots.Length " configured (Auto Equip protected)")
     if (StrategyHotbarRemapSummary != "")
         LogToConsole("Hotbar swap: " StrategyHotbarRemapSummary)
     if (AdvancedAutoSkip = "ON")
@@ -5744,10 +6206,10 @@ LowerGraphics() {
 }
 
 EquipTowers(towers) {
-    global AbstractTowerSlot
+    global AbstractTowerSlots, AbstractTowerSlot
 
-    if (AbstractTowerSlot > 0) {
-        LogToConsole("Auto Equip skipped: abstract hotbar slot " AbstractTowerSlot " must keep the player's chosen XP tower equipped.", true, false)
+    if (AbstractTowerSlots.Length > 0) {
+        LogToConsole("Auto Equip skipped: abstract hotbar slots " AbstractTowerSlotsToText(AbstractTowerSlots) " must keep the player's chosen XP towers equipped.", true, false)
         return true
     }
 
@@ -7404,7 +7866,11 @@ getSlots() {
 
 SpawnTower(X, Y, slotNumber, towerID) {
     global Towers, LastOpenedTowerID, CancelPlacementKey, canUseAbility, UseNumbersForHotbar, Slots
-    global AbstractTowerSlot
+    global AbstractTowerSlots, AbstractTowerSlot
+    if (IsAbstractTowerSlot(slotNumber) && !IsActiveAbstractTowerSlot(slotNumber)) {
+        LogToConsole("Skipping inactive abstract tower " towerID " in hotbar slot " slotNumber ".")
+        return true
+    }
     LogToConsole("Placing tower " towerID " (slot " slotNumber ") at x:" X " y:" Y "...")
 
     X := sX(X, StrategyWidth)
@@ -7420,7 +7886,7 @@ SpawnTower(X, Y, slotNumber, towerID) {
     attemptMultiplier := 1
     startTime := A_TickCount
     canUseAbility := false
-    isAbstractPlacement := (NormalizeAbstractTowerSlot(slotNumber) = AbstractTowerSlot && AbstractTowerSlot > 0)
+    isAbstractPlacement := IsActiveAbstractTowerSlot(slotNumber)
     placementTimeout := isAbstractPlacement ? 900000 : 300000
 
     if (isAbstractPlacement)
@@ -8214,7 +8680,7 @@ HasStep(searchStep) {
 
 
 GetNextTowerID(slot) {
-    global requiredTowers, Towers, AbstractTowerSlot
+    global requiredTowers, Towers, AbstractTowerSlots, AbstractTowerSlot
 
     slotArray := StrSplit(requiredTowers, ",")
     for index, name in slotArray {
@@ -8222,7 +8688,7 @@ GetNextTowerID(slot) {
     }
 
     targetSlot := Integer(slot)
-    if (targetSlot = AbstractTowerSlot && AbstractTowerSlot > 0) {
+    if (IsAbstractTowerSlot(targetSlot)) {
         baseName := "Abstract"
     } else if (targetSlot > slotArray.Length || targetSlot < 1) {
         baseName := ""
@@ -8328,6 +8794,44 @@ HideDebugConsole() {
     OverlayPicHWND := 0
 }
 
+TowerXPOverlayName(name) {
+    aliases := Map("Minigunner", "Mini", "Crook Boss", "Crook", "Shotgunner", "Shotgun",
+        "Juggernaut", "Jugg", "Operator", "Operator", "Kingpin", "Kingpin",
+        "Enforcer", "Enforcer", "Scout", "Scout")
+    return aliases.Has(name) ? aliases[name] : name
+}
+
+GetTowerXPOverlayLine() {
+    global SettingsFile
+    if (Integer(IniRead(SettingsFile, "TowerXP", "Enabled", 0)) != 1)
+        return ""
+
+    parts := []
+    trackedCount := 0
+    for definition in TowerXPDefinitions() {
+        section := TowerXPSectionName(definition.name)
+        if (Integer(IniRead(SettingsFile, section, "Tracked", 0)) != 1)
+            continue
+        trackedCount += 1
+        if (parts.Length >= 3)
+            continue
+        level := Integer(IniRead(SettingsFile, section, "Level", 0))
+        xp := Integer(IniRead(SettingsFile, section, "XP", 0))
+        progress := TowerXPAdvance(definition, level, xp)
+        status := progress.isMax ? "MAX" : progress.xp "/" progress.nextRequired
+        parts.Push(TowerXPOverlayName(definition.name) " L" progress.level " " status)
+    }
+
+    if (parts.Length = 0)
+        return "Tower XP  enabled - no towers selected"
+    line := "Tower XP  "
+    for index, part in parts
+        line .= (index > 1 ? " | " : "") part
+    if (trackedCount > parts.Length)
+        line .= " | +" (trackedCount - parts.Length) " more"
+    return line
+}
+
 UpdateOverlay() {
     global OverlayBitmap, OverlayGraphics, OverlayPicHWND, LogLines, OverlayWidth, OverlayHeight
     global StateFile, AutorunStartTime
@@ -8375,6 +8879,9 @@ UpdateOverlay() {
         . "`nCoins " FormatStatsNumber(runCoins) " | Gems " FormatStatsNumber(runGems) " | XP " FormatStatsNumber(runExp)
         . "`nRuntime " runRuntime " | Avg " FormatStatsDuration(runAverageSeconds)
         . " | " FormatStatsNumber(runCoinsPerHour) " C/h | " FormatStatsNumber(runGemsPerHour) " G/h | " FormatStatsNumber(runExpPerHour) " XP/h"
+    towerXPLine := GetTowerXPOverlayLine()
+    if (towerXPLine != "")
+        statsText .= "`n" towerXPLine
 
     hFamilyOverlay := Gdip_FontFamilyCreate(fontName)
     hFontOverlay   := Gdip_FontCreate(hFamilyOverlay, fontSize, style)
@@ -8412,7 +8919,8 @@ UpdateOverlay() {
         return
     }
 
-    statsHeight := Round(fontSize * 4.45)
+    statsLineCount := 3 + (towerXPLine != "" ? 1 : 0)
+    statsHeight := Round(fontSize * (statsLineCount + 1.45))
     Gdip_FillRectangle(OverlayGraphics, pBrushStatsBg, 5, 3, OverlayWidth - 10, statsHeight)
     Gdip_FillRectangle(OverlayGraphics, pBrushStatsAccent, 5, 3, 4, statsHeight)
     CreateRectF(&StatsRC, 16, 5, OverlayWidth - 24, statsHeight - 4)
