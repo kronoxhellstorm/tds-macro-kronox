@@ -4,6 +4,17 @@
 #Include "%A_LineFile%\..\..\lib\OCR.ahk"
 #Include "%A_LineFile%\..\..\lib\TowerXP.ahk"
 
+ReadTowerXPFromBitmap(bitmap, candidate) {
+    for region in TowerXPCropRegions(candidate) {
+        crop := Gdip_CloneBitmapArea(bitmap, region.x, region.y, region.w, region.h)
+        rewardText := OCR.FromBitmap(crop, {lang: "en-US", scale: 4, grayscale: true}).Text
+        Gdip_DisposeImage(crop)
+        if (RegExMatch(rewardText, "i)(\d[\d,.]*)\s*[xX*][pP]", &rewardMatch))
+            return Integer(StrReplace(StrReplace(rewardMatch[1], ",", ""), ".", ""))
+    }
+    return 0
+}
+
 SplitPath(A_LineFile, , &testDir)
 SetWorkingDir(testDir "\..")
 token := Gdip_Startup()
@@ -52,19 +63,16 @@ if (A_Args.Length > 0 && FileExist(A_Args[1])) {
             continue
 
         point := StrSplit(StrSplit(outputList, "`n")[1], ",")
-        centerX := Integer(point[1]) + Round(sourceW / 2)
-        centerY := Integer(point[2]) + Round(portraitH / 2)
-        regionX := Max(0, Round(centerX - (sourceW * 0.55)))
-        regionY := Max(0, Round(centerY + (portraitH * 0.16)))
-        regionW := Max(40, Round(sourceW * 1.1))
-        regionH := Max(40, Round(portraitH * 0.72))
-        rewardTextBitmap := Gdip_CloneBitmapArea(resultBitmap, regionX, regionY, regionW, regionH)
-        rewardText := OCR.FromBitmap(rewardTextBitmap, {lang: "en-US", scale: 4, grayscale: true}).Text
-        Gdip_DisposeImage(rewardTextBitmap)
-        rewardAmount := 0
-        if (RegExMatch(rewardText, "i)(\d[\d,.]*)\s*[xX*][pP]", &rewardMatch)) {
-            rewardAmount := Integer(StrReplace(StrReplace(rewardMatch[1], ",", ""), ".", ""))
+        topLeftCandidate := {x: Integer(point[1]), y: Integer(point[2]), w: sourceW, h: portraitH}
+        rewardAmount := ReadTowerXPFromBitmap(resultBitmap, topLeftCandidate)
+        if (rewardAmount > 0) {
             successfulRewardAmounts.Push(rewardAmount)
+        }
+        if (definition.name = "Juggernaut") {
+            centerCandidate := {x: Integer(point[1]) + Round(sourceW / 2),
+                y: Integer(point[2]) + Round(portraitH / 2), w: sourceW, h: portraitH}
+            if (ReadTowerXPFromBitmap(resultBitmap, centerCandidate) <= 0)
+                failures.Push("Juggernaut direct OCR failed with a center-anchored match")
         }
         recognizedRewards.Push({name: definition.name, amount: rewardAmount})
     }
@@ -72,21 +80,21 @@ if (A_Args.Length > 0 && FileExist(A_Args[1])) {
     sharedRewardAmount := TowerXPConsensusAmount(successfulRewardAmounts)
     effectiveRewards := 0
     recognizedNames := ""
-    juggernautRecoverable := false
+    juggernautDirect := false
     for reward in recognizedRewards {
         recognizedNames .= (recognizedNames != "" ? ", " : "") reward.name
         if (reward.amount > 0 || sharedRewardAmount > 0)
             effectiveRewards += 1
-        if (reward.name = "Juggernaut" && (reward.amount > 0 || sharedRewardAmount > 0))
-            juggernautRecoverable := true
+        if (reward.name = "Juggernaut" && reward.amount > 0)
+            juggernautDirect := true
     }
     ; The exact-size offline matcher does not scale like the runtime OpenCV
     ; matcher, but it must identify the failing Juggernaut card and prove that
     ; the same-screen consensus recovers its amount.
     if (effectiveRewards < 3)
         failures.Push("expected at least three exact-size cards after shared-reward recovery, read " effectiveRewards " (portraits: " recognizedNames ")")
-    if (!juggernautRecoverable)
-        failures.Push("Juggernaut was not recoverable from the supplied Triumph screenshot")
+    if (!juggernautDirect)
+        failures.Push("Juggernaut's own XP text was not directly readable in the supplied Triumph screenshot")
 }
 
 Gdip_Shutdown(token)

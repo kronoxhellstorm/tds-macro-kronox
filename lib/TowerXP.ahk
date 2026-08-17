@@ -77,6 +77,39 @@ TowerXPConsensusAmount(amounts) {
     return (bestCount > 0 && !tied) ? bestAmount : 0
 }
 
+TowerXPCropRegions(candidate) {
+    anchors := [
+        {x: candidate.x, y: candidate.y, name: "center"},
+        {x: candidate.x + Round(candidate.w / 2), y: candidate.y + Round(candidate.h / 2), name: "top-left"}
+    ]
+    profiles := [
+        {x: -0.55, y: 0.16, w: 1.10, h: 0.72, name: "focused"},
+        {x: -0.72, y: 0.05, w: 1.44, h: 1.15, name: "wide-low"},
+        {x: -0.72, y: 0.38, w: 1.44, h: 0.82, name: "text-band"}
+    ]
+    regions := []
+    seen := Map()
+
+    for anchor in anchors {
+        for profile in profiles {
+            region := {
+                x: Max(0, Round(anchor.x + (candidate.w * profile.x))),
+                y: Max(0, Round(anchor.y + (candidate.h * profile.y))),
+                w: Max(40, Round(candidate.w * profile.w)),
+                h: Max(40, Round(candidate.h * profile.h)),
+                anchor: anchor.name,
+                profile: profile.name
+            }
+            key := region.x ":" region.y ":" region.w ":" region.h
+            if (seen.Has(key))
+                continue
+            seen[key] := true
+            regions.Push(region)
+        }
+    }
+    return regions
+}
+
 TowerXPStoredStopMode(labelOrValue) {
     value := Trim(String(labelOrValue))
     if (value = "Any selected tower" || value = "Any")

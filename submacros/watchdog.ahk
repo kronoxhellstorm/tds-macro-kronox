@@ -15,6 +15,7 @@ SetWorkingDir(A_ScriptDir "\..\")
 #Include "%A_LineFile%\..\..\lib\OCR.ahk"
 #Include "%A_LineFile%\..\..\lib\Roblox.ahk"
 #Include "%A_LineFile%\..\..\lib\TowerXP.ahk"
+#Include "%A_LineFile%\..\..\lib\KronoxFeatures.ahk"
 
 Opt := A_AppData "\Ultimate_Macro\Options"
 SettingsFile := Opt "\Settings.tds"
@@ -22,6 +23,8 @@ StateFile := A_AppData "\Ultimate_Macro\state.ini"
 OverallStatsFile := A_AppData "\Ultimate_Macro\overall_stats.ini"
 StatsHistoryFile := A_AppData "\Ultimate_Macro\stats_history.csv"
 RunLedgerFile := A_AppData "\Ultimate_Macro\run_ledger.csv"
+RunContextFile := A_AppData "\Ultimate_Macro\run_context.csv"
+StrategyProfileFile := A_AppData "\Ultimate_Macro\strategy_profiles.csv"
 RuntimeLogDir := A_AppData "\Ultimate_Macro\Logs"
 
 global WebhookLink := IniRead(SettingsFile, "Webhook", "Link", "")
@@ -54,6 +57,7 @@ if (A_Args.Length < 1) {
 }
 
 MainPID := A_Args[1]
+global RecoveryStarted := false
 
 if !DirExist(RuntimeLogDir)
     DirCreate(RuntimeLogDir)
@@ -93,17 +97,30 @@ Loop {
     }
 
     if (Mod(loopCounter, 5) == 0) {
+        absoluteReason := KronoxAbsoluteStallReason(SettingsFile, StateFile, MainPID)
+        if (absoluteReason != "") {
+            QuiesceMainForRecovery(absoluteReason)
+            if (WebhookEnabled && WebhookLink != "") {
+                SendScreenshot(, "Absolute Mode recovery: " absoluteReason)
+            }
+            RestartMain("absolute-mode:" absoluteReason, true)
+            return
+        }
+
         stalledPhase := GetStalledMainPhase()
         if (stalledPhase != "") {
+            QuiesceMainForRecovery("stalled-phase:" stalledPhase)
             if (WebhookEnabled && WebhookLink != "") {
                 SendScreenshot(, "Macro stalled during " stalledPhase "; recovering")
             }
-            RestartMain("stalled-phase:" stalledPhase)
+            RestartMain("stalled-phase:" stalledPhase,
+                KronoxFeatureBool(IniRead(SettingsFile, "Reliability", "AbsoluteMode", 0)))
             return
         }
     }
 
     if WinExist("Roblox Crash") {
+        QuiesceMainForRecovery("roblox-crash-window")
         if (WebhookEnabled && WebhookLink != "") {
             SendScreenshot(,"Roblox has crashed!")
         }
@@ -112,6 +129,7 @@ Loop {
     }
 
     if !WinExist("ahk_exe RobloxPlayerBeta.exe") {
+        QuiesceMainForRecovery("roblox-window-missing")
         if (WebhookEnabled && WebhookLink != "") {
             SendScreenshot(,"Roblox is not running!")
         }
@@ -128,6 +146,7 @@ Loop {
         try {
             if ImageSearch(&FoundX, &FoundY, 0, 0, sw, sh, "*26 Resources/Disconnected.png") {
                 CoordMode("Pixel", "Client")
+                QuiesceMainForRecovery("disconnect-dialog-primary")
                 if (WebhookEnabled && WebhookLink != "") {
                     SendScreenshot(, "Disconnected, rejoining")
                 }
@@ -135,6 +154,7 @@ Loop {
                 ExitApp()
             } else if ImageSearch(&FoundX, &FoundY, 0, 0, sw, sh, "*26 Resources/disconnected2.png") {
                 CoordMode("Pixel", "Client")
+                QuiesceMainForRecovery("disconnect-dialog-secondary")
                 if (WebhookEnabled && WebhookLink != "") {
                     SendScreenshot(, "Disconnected, rejoining")
                 }
@@ -156,7 +176,7 @@ Loop {
             CloseMain()
             Sleep 1300
             resultStatus := SendInfo("Triumph", "triumph-title")
-            if (resultStatus != "duplicate" && resultStatus != "tower-xp-stop")
+            if (resultStatus != "duplicate" && resultStatus != "tower-xp-stop" && resultStatus != "automation-stop")
                 RestartMain("result-triumph-title")
             ExitApp()
         }
@@ -169,7 +189,7 @@ Loop {
             CloseMain()
             Sleep 1300
             resultStatus := SendInfo("Triumph", "play-again-button")
-            if (resultStatus != "duplicate" && resultStatus != "tower-xp-stop")
+            if (resultStatus != "duplicate" && resultStatus != "tower-xp-stop" && resultStatus != "automation-stop")
                 RestartMain("result-play-again-button")
             ExitApp()
         }
@@ -192,7 +212,7 @@ Loop {
             Sleep 1300
             detection := lossByTitle ? "you-lost-title" : "restart-button"
             resultStatus := SendInfo("Loss", detection)
-            if (resultStatus != "duplicate")
+            if (resultStatus != "duplicate" && resultStatus != "automation-stop")
                 RestartMain("result-" detection)
             ExitApp()
         }
@@ -230,12 +250,28 @@ WriteRuntimeLog(source, text, level := "INFO") {
 }
 
 HandleWatchdogError(err, mode) {
+    global MainPID, StateFile
     message := "Unhandled watchdog error"
     try message := err.Message
     location := ""
     try location := err.File (err.Line ? ":" err.Line : "")
     try WriteRuntimeLog("WATCHDOG", message (location != "" ? " at " location : "") " [mode " mode "]", "ERROR")
-    return false
+    try ReleaseAutomationInputs()
+    try IniWrite("watchdog-error", StateFile, "Health", "Phase")
+    try IniWrite(message, StateFile, "Health", "Detail")
+    if (MainPID != "" && ProcessExist(MainPID)
+        && KronoxFeatureBool(IniRead(StateFile, "State", "Running", 0))) {
+        try SetTimer(RecoverFromWatchdogError.Bind(message), -50)
+    }
+    ; Suppress the modal AHK dialog. It previously stranded the main process
+    ; while its input timers continued to move the cursor.
+    return true
+}
+
+RecoverFromWatchdogError(message, *) {
+    global SettingsFile
+    hardReset := KronoxFeatureBool(IniRead(SettingsFile, "Reliability", "AbsoluteMode", 0))
+    RestartMain("watchdog-error:" message, hardReset)
 }
 
 GetStalledMainPhase() {
@@ -284,7 +320,8 @@ IsLossRestartVisible(w, h) {
 }
 
 SendInfo(matchResult := "", detectionSource := "result-screen") {
-    global WebhookLink, StateFile, OverallStatsFile, StatsHistoryFile, RunLedgerFile, SendCurrenciesEnabled, WebhookEnabled, WebhookSepatateTriumphScreenshots, WebhookLink2
+    global WebhookLink, StateFile, SettingsFile, OverallStatsFile, StatsHistoryFile, RunLedgerFile
+    global RunContextFile, StrategyProfileFile, SendCurrenciesEnabled, WebhookEnabled, WebhookSepatateTriumphScreenshots, WebhookLink2
 
     shouldSendWebhook := (WebhookEnabled && WebhookLink != "")
     originalWebhookLink := WebhookLink
@@ -301,6 +338,8 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     gemVal := 0
     expVal := 0
     towerXPResult := {summary: "", detected: 0, stopTriggered: false, stopMessage: ""}
+    queueResult := {enabled: false, changed: false, complete: false, advanced: [], message: ""}
+    canaryResult := {active: false, stop: false, message: ""}
     strategyFile := IniRead(StateFile, "State", "Strategy", "")
     activeRunId := IniRead(StateFile, "State", "ActiveRunId", "")
     lastCompletedRunId := IniRead(StateFile, "State", "LastCompletedRunId", "")
@@ -314,6 +353,12 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     activeStrategyFingerprint := IniRead(StateFile, "State", "ActiveStrategyFingerprint", "legacy")
     activeStrategyDisplay := IniRead(StateFile, "State", "ActiveStrategyDisplay", "")
     activeModifiers := IniRead(StateFile, "State", "ActiveModifiers", "")
+    activeModifierDisplay := IniRead(StateFile, "State", "ActiveModifierDisplay", KronoxCanonicalModifierSet(activeModifiers))
+    activeXPBoostProfile := IniRead(StateFile, "State", "ActiveXPBoostProfile", "Base XP")
+    activeXPBoostFactorText := IniRead(StateFile, "State", "ActiveXPBoostFactor", "1")
+    activeXPBoostFactor := IsNumber(activeXPBoostFactorText) ? Max(0.1, Number(activeXPBoostFactorText)) : 1.0
+    activeTDSVersion := IniRead(StateFile, "State", "ActiveTDSVersion", "Unknown")
+    activeCanaryStatus := KronoxFeatureBool(IniRead(StateFile, "State", "CanaryActive", 0)) ? "Canary" : "Normal"
     activeMapName := IniRead(StateFile, "State", "ActiveMap", "")
     activeModeName := IniRead(StateFile, "State", "ActiveMode", "")
     strategyMapName := ""
@@ -493,6 +538,22 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
             towerXPResult := ProcessTowerXPRewards(FoundX, FoundY, w, h)
         else if (Integer(IniRead(SettingsFile, "TowerXP", "Enabled", 0)) = 1)
             WriteRuntimeLog("TOWERXP", "Triumph was recorded without a stable result anchor; tower XP was not changed.", "WARN")
+        queueResult := KronoxEvolutionAdvanceCompleted(SettingsFile, StateFile)
+        if (queueResult.enabled && queueResult.changed && queueResult.message != "")
+            towerXPResult.summary .= (towerXPResult.summary != "" ? " | " : "") "Queue: " queueResult.message
+        if (queueResult.enabled && queueResult.complete) {
+            towerXPResult.stopTriggered := true
+            towerXPResult.stopMessage := queueResult.message
+        } else if (queueResult.enabled && queueResult.changed
+            && !KronoxFeatureBool(IniRead(SettingsFile, "EvolutionQueue", "AutoEquip", 1))) {
+            towerXPResult.stopTriggered := true
+            towerXPResult.stopMessage := "Evolution Queue advanced; equip " KronoxEvolutionAssignmentText(SettingsFile) " and resume manually"
+        } else if (queueResult.enabled && !queueResult.complete) {
+            ; A per-tower stop target must not interrupt an active queue. The
+            ; queue owns the stop decision until every queued tower is done.
+            towerXPResult.stopTriggered := false
+            towerXPResult.stopMessage := ""
+        }
     }
 
     totalTriumphs := IniRead(StateFile, "State", "TotalTriumphs", 0)
@@ -526,7 +587,11 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     overallCoins := Integer(IniRead(OverallStatsFile, "Overall", "Coins", 0))
     overallGems := Integer(IniRead(OverallStatsFile, "Overall", "Gems", 0))
     overallExp := Integer(IniRead(OverallStatsFile, "Overall", "EXP", 0))
+    overallNormalizedExp := Integer(IniRead(OverallStatsFile, "Overall", "NormalizedEXP", 0))
+    overallBoostTrackedRuns := Integer(IniRead(OverallStatsFile, "Overall", "BoostTrackedRuns", 0))
+    overallBoostTrackedSeconds := Integer(IniRead(OverallStatsFile, "Overall", "BoostTrackedSeconds", 0))
     overallTime := Integer(IniRead(OverallStatsFile, "Overall", "TotalTimeSeconds", 0))
+    normalizedExpVal := Round(expVal / activeXPBoostFactor)
 
     if (matchResult = "Triumph")
         overallTriumphs += 1
@@ -536,6 +601,9 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     overallCoins += coinVal
     overallGems += gemVal
     overallExp += expVal
+    overallNormalizedExp += normalizedExpVal
+    overallBoostTrackedRuns += 1
+    overallBoostTrackedSeconds += timeInSeconds
     overallTime += timeInSeconds
     overallMatches := overallTriumphs + overallLosses
     overallRunStarts := Max(overallMatches, Integer(IniRead(OverallStatsFile, "Overall", "TotalRunStarts", overallMatches)))
@@ -546,18 +614,30 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     IniWrite(overallCoins, OverallStatsFile, "Overall", "Coins")
     IniWrite(overallGems, OverallStatsFile, "Overall", "Gems")
     IniWrite(overallExp, OverallStatsFile, "Overall", "EXP")
+    IniWrite(overallNormalizedExp, OverallStatsFile, "Overall", "NormalizedEXP")
+    IniWrite(overallBoostTrackedRuns, OverallStatsFile, "Overall", "BoostTrackedRuns")
+    IniWrite(overallBoostTrackedSeconds, OverallStatsFile, "Overall", "BoostTrackedSeconds")
     IniWrite(overallTime, OverallStatsFile, "Overall", "TotalTimeSeconds")
     IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), OverallStatsFile, "Overall", "LastUpdated")
     IniWrite(matchResult, OverallStatsFile, "Overall", "LastResult")
     IniWrite(detectionSource, OverallStatsFile, "Overall", "LastResultDetection")
 
-    UpdateBreakdownStats(OverallStatsFile, "Map", mapName, matchResult, coinVal, gemVal, expVal, timeInSeconds)
-    UpdateBreakdownStats(OverallStatsFile, "Mode", modeName, matchResult, coinVal, gemVal, expVal, timeInSeconds)
-    UpdateBreakdownStats(OverallStatsFile, "Strategy", activeStrategyDisplay, matchResult, coinVal, gemVal, expVal, timeInSeconds)
+    UpdateBreakdownStats(OverallStatsFile, "Map", mapName, matchResult, coinVal, gemVal, expVal, timeInSeconds, activeXPBoostFactor)
+    UpdateBreakdownStats(OverallStatsFile, "Mode", modeName, matchResult, coinVal, gemVal, expVal, timeInSeconds, activeXPBoostFactor)
+    UpdateBreakdownStats(OverallStatsFile, "Strategy", activeStrategyDisplay, matchResult, coinVal, gemVal, expVal, timeInSeconds, activeXPBoostFactor)
+    UpdateBreakdownStats(OverallStatsFile, "Modifier", activeModifierDisplay, matchResult, coinVal, gemVal, expVal,
+        timeInSeconds, activeXPBoostFactor, KronoxModifierMultiplier(activeModifiers))
+    UpdateBreakdownStats(OverallStatsFile, "Boost", activeXPBoostProfile, matchResult, coinVal, gemVal, expVal,
+        timeInSeconds, activeXPBoostFactor)
     try AppendStatsHistory(StatsHistoryFile, matchResult, detectionSource, mapName, modeName, timeInSeconds, coinVal, gemVal, expVal)
     try AppendRunLedgerResult(RunLedgerFile, activeRunId, matchResult, detectionSource, activeStrategyName,
         activeStrategyFingerprint, mapName, modeName, activeModifiers, timeInSeconds, coinVal, gemVal, expVal)
     try UpdateRecentRuns(OverallStatsFile, matchResult, detectionSource, mapName, timeInSeconds, coinVal)
+    try KronoxProfilerRecordResult(StrategyProfileFile, StateFile, activeRunId, matchResult)
+    try KronoxAppendRunContextEvent(RunContextFile, activeRunId, "RESULT", activeXPBoostProfile,
+        activeXPBoostFactor, activeModifierDisplay, KronoxModifierMultiplier(activeModifiers),
+        IniRead(SettingsFile, "Options", "TimeScaleMode", "OFF"), activeTDSVersion, activeCanaryStatus)
+    canaryResult := KronoxCanaryRecordResult(SettingsFile, StateFile, matchResult)
 
     IniWrite(matchResult, StateFile, "State", "LastResult")
     IniWrite(detectionSource, StateFile, "State", "LastResultDetection")
@@ -569,7 +649,7 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     IniDelete(StateFile, "State", "TimeWhenStartedPlaying")
     for key in ["ActiveRunId", "ActiveRunStartedAt", "ActiveRunStartedTick", "ActiveStrategyPath",
         "ActiveStrategyName", "ActiveStrategyFingerprint", "ActiveStrategyDisplay", "ActiveMap",
-        "ActiveMode", "ActiveModifiers"]
+        "ActiveMode", "ActiveModifiers", "ActiveModifierDisplay", "ActiveXPBoostProfile", "ActiveXPBoostFactor"]
         try IniDelete(StateFile, "State", key)
     try IniDelete(StateFile, "State", "ResultClaimedRunId")
     try IniDelete(StateFile, "State", "ResultClaimedAt")
@@ -621,7 +701,9 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     if (towerXPResult.summary != "")
         description .= "`nTower XP: **" towerXPResult.summary "**"
     if (towerXPResult.stopTriggered)
-        description .= "`n### :dart: Tower XP target reached`nMacro stopped automatically: **" towerXPResult.stopMessage "**"
+        description .= "`n### :dart: Automation target reached`nMacro stopped automatically: **" towerXPResult.stopMessage "**"
+    if (canaryResult.active)
+        description .= "`nUpdate canary: **" canaryResult.message "**"
 
     ; Emit exactly one result webhook. The old missing-anchor fallback sent a
     ; header here early and then this full report, producing duplicate posts.
@@ -649,6 +731,15 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
         IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "Health", "UpdatedAt")
         WriteRuntimeLog("TOWERXP", "Macro stopped: " towerXPResult.stopMessage ".")
         return "tower-xp-stop"
+    }
+    if (canaryResult.stop) {
+        IniWrite(0, StateFile, "State", "Running")
+        IniWrite("update-canary-failed", StateFile, "State", "LastStopReason")
+        IniWrite("stopped", StateFile, "Health", "Phase")
+        IniWrite(canaryResult.message, StateFile, "Health", "Detail")
+        IniWrite(0, StateFile, "Health", "TimeoutMs")
+        WriteRuntimeLog("CANARY", canaryResult.message ".", "WARN")
+        return "automation-stop"
     }
     return "recorded"
 }
@@ -689,25 +780,48 @@ ReadTowerXPAmount(candidate) {
     if (!robloxHwnd)
         return 0
 
-    regionX := Max(0, Round(candidate.x - (candidate.w * 0.55)))
-    regionY := Max(0, Round(candidate.y + (candidate.h * 0.16)))
-    regionW := Max(40, Round(candidate.w * 1.1))
-    regionH := Max(40, Round(candidate.h * 0.72))
-    ocrText := ""
+    ; OpenCV and the GDI fallback have historically disagreed on whether x/y
+    ; describe a match center or its top-left corner. Try both interpretations,
+    ; and use wider/lower crops so bottom-row cards such as Juggernaut keep the
+    ; complete '+NN XP' baseline inside the OCR bitmap.
+    cropRegions := TowerXPCropRegions(candidate)
+    ocrSamples := []
+    lastError := ""
 
-    try {
-        hBitmap := OCR.CreateHBitmap(regionX, regionY, regionW, regionH,
-            {hWnd: robloxHwnd, onlyClientArea: 1, mode: 2}, 4)
-        ocrText := OCR.FromBitmap(hBitmap, {lang: "en-US", grayscale: true}).Text
-    } catch Error as err {
-        WriteRuntimeLog("TOWERXP", "Could not OCR reward card for " candidate.definition.name ": " err.Message, "WARN")
-        return 0
+    for region in cropRegions {
+        hBitmap := 0
+        ocrText := ""
+        try {
+            hBitmap := OCR.CreateHBitmap(region.x, region.y, region.w, region.h,
+                {hWnd: robloxHwnd, onlyClientArea: 1, mode: 2}, 4)
+            ocrText := OCR.FromBitmap(hBitmap, {lang: "en-US", grayscale: true}).Text
+        } catch Error as err {
+            lastError := err.Message
+        } finally {
+            ; OCR.CreateHBitmap returns OCR.IBase, whose destructor owns both
+            ; the HBITMAP and DC. Passing that wrapper to GDI DeleteObject is
+            ; invalid and caused the watchdog popup fixed in kronox.7.
+            hBitmap := 0
+        }
+
+        if RegExMatch(ocrText, "i)[+t]?\s*(\d[\d,.]*)\s*[xX*][pP]", &xpMatch) {
+            amount := Integer(StrReplace(StrReplace(xpMatch[1], ",", ""), ".", ""))
+            if (region.anchor != "center" || region.profile != "focused")
+                WriteRuntimeLog("TOWERXP", "Read " candidate.definition.name " directly with the " region.anchor "/" region.profile " XP crop.")
+            return amount
+        }
+
+        cleanOCR := Trim(StrReplace(StrReplace(ocrText, "`r", " "), "`n", " "))
+        if (cleanOCR != "")
+            ocrSamples.Push(cleanOCR)
     }
 
-    if RegExMatch(ocrText, "i)[+t]?\s*(\d[\d,.]*)\s*[xX*][pP]", &xpMatch)
-        return Integer(StrReplace(StrReplace(xpMatch[1], ",", ""), ".", ""))
-    cleanOCR := Trim(StrReplace(ocrText, "`n", " "))
-    WriteRuntimeLog("TOWERXP", "Recognized " candidate.definition.name " portrait but could not read its XP text (OCR: " cleanOCR ").", "WARN")
+    sampleText := ""
+    for index, sample in ocrSamples
+        sampleText .= (index > 1 ? " | " : "") sample
+    if (sampleText = "")
+        sampleText := lastError != "" ? "error: " lastError : "empty"
+    WriteRuntimeLog("TOWERXP", "Recognized " candidate.definition.name " portrait but could not directly read its XP text after " cropRegions.Length " crops (OCR: " sampleText ").", "WARN")
     return 0
 }
 
@@ -845,7 +959,8 @@ EvaluateTowerXPStopRule() {
     return {triggered: true, message: message}
 }
 
-UpdateBreakdownStats(file, kind, displayName, matchResult, coinVal, gemVal, expVal, timeInSeconds) {
+UpdateBreakdownStats(file, kind, displayName, matchResult, coinVal, gemVal, expVal, timeInSeconds,
+    xpBoostFactor := 1.0, modifierMultiplier := 1.0) {
     if (displayName = "" || displayName = "Unknown")
         return
 
@@ -855,6 +970,9 @@ UpdateBreakdownStats(file, kind, displayName, matchResult, coinVal, gemVal, expV
     coins := Integer(IniRead(file, section, "Coins", 0))
     gems := Integer(IniRead(file, section, "Gems", 0))
     exp := Integer(IniRead(file, section, "EXP", 0))
+    normalizedExp := Integer(IniRead(file, section, "NormalizedEXP", 0))
+    boostTrackedRuns := Integer(IniRead(file, section, "BoostTrackedRuns", 0))
+    boostTrackedSeconds := Integer(IniRead(file, section, "BoostTrackedSeconds", 0))
     totalTime := Integer(IniRead(file, section, "TotalTimeSeconds", 0))
 
     if (matchResult = "Triumph")
@@ -865,6 +983,9 @@ UpdateBreakdownStats(file, kind, displayName, matchResult, coinVal, gemVal, expV
     coins += coinVal
     gems += gemVal
     exp += expVal
+    normalizedExp += Round(expVal / Max(0.1, xpBoostFactor))
+    boostTrackedRuns += 1
+    boostTrackedSeconds += timeInSeconds
     totalTime += timeInSeconds
     matches := wins + losses
     runStarts := Max(matches, Integer(IniRead(file, section, "TotalRunStarts", matches)))
@@ -877,6 +998,11 @@ UpdateBreakdownStats(file, kind, displayName, matchResult, coinVal, gemVal, expV
     IniWrite(coins, file, section, "Coins")
     IniWrite(gems, file, section, "Gems")
     IniWrite(exp, file, section, "EXP")
+    IniWrite(normalizedExp, file, section, "NormalizedEXP")
+    IniWrite(boostTrackedRuns, file, section, "BoostTrackedRuns")
+    IniWrite(boostTrackedSeconds, file, section, "BoostTrackedSeconds")
+    if (kind = "Modifier")
+        IniWrite(modifierMultiplier, file, section, "ModifierMultiplier")
     IniWrite(totalTime, file, section, "TotalTimeSeconds")
     IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), file, section, "LastUpdated")
 }
@@ -1135,6 +1261,7 @@ CloseMain() {
     global MainPID, SettingsFile
 
     WriteRuntimeLog("WATCHDOG", "Closing main PID " MainPID " for result processing.")
+    ReleaseAutomationInputs()
     try ProcessClose(MainPID)
 
     wmi := ComObjGet("winmgmts:")
@@ -1147,13 +1274,37 @@ CloseMain() {
     }
 }
 
-RestartMain(reason := "watchdog-recovery") {
-    global MainPID, SettingsFile, StateFile
+QuiesceMainForRecovery(reason := "watchdog-recovery") {
+    global MainPID
+
+    ReleaseAutomationInputs()
+    if (MainPID != "" && ProcessExist(MainPID)) {
+        WriteRuntimeLog("INPUT", "Stopping main PID " MainPID " before recovery: " reason ".", "WARN")
+        try ProcessClose(MainPID)
+    }
+}
+
+RestartMain(reason := "watchdog-recovery", forceRobloxReset := false) {
+    global MainPID, SettingsFile, StateFile, RecoveryStarted
+
+    if (RecoveryStarted)
+        return
+    RecoveryStarted := true
 
     WriteRuntimeLog("WATCHDOG", "Restarting main PID " MainPID ": " reason ".", "WARN")
+    ReleaseAutomationInputs()
+    if (KronoxCanaryBlockRecovery(SettingsFile, StateFile, reason)) {
+        WriteRuntimeLog("CANARY", "Blocked unattended recovery after " reason "; the macro was stopped for review.", "WARN")
+        try ProcessClose(MainPID)
+        ExitApp()
+    }
     try IniWrite("watchdog-restarting", StateFile, "Health", "Phase")
     try IniWrite(reason, StateFile, "Health", "Detail")
     try IniWrite(0, StateFile, "Health", "TimeoutMs")
+    try IniWrite(Integer(IniRead(StateFile, "Reliability", "RecoveryCount", 0)) + 1,
+        StateFile, "Reliability", "RecoveryCount")
+    try IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "Reliability", "LastRecoveryAt")
+    try IniWrite(reason, StateFile, "Reliability", "LastRecoveryReason")
 
     try ProcessClose(MainPID)
 
@@ -1164,6 +1315,10 @@ RestartMain(reason := "watchdog-recovery") {
         if (InStr(cmd, "Main.ahk")) {
             try ProcessClose(process.ProcessId)
         }
+    }
+    if (forceRobloxReset) {
+        WriteRuntimeLog("WATCHDOG", "Absolute recovery is closing Roblox before relaunch.", "WARN")
+        CloseRobloxProcesses()
     }
     WebhookLink := IniRead(SettingsFile, "Webhook", "Link", "")
     tempWebhook := IniRead(SettingsFile, "Webhook", "Enabled", "OFF")
@@ -1178,7 +1333,30 @@ RestartMain(reason := "watchdog-recovery") {
     ExitApp()
 }
 
+ReleaseAutomationInputs() {
+    keys := ["LButton", "RButton", "MButton", "Shift", "LShift", "RShift", "Ctrl", "LCtrl", "RCtrl",
+        "Alt", "LAlt", "RAlt", "Space", "Left", "Right", "Up", "Down", "Tab", "Enter", "Escape"]
+    Loop 26
+        keys.Push(Chr(96 + A_Index))
+    Loop 10
+        keys.Push(String(Mod(A_Index, 10)))
+    for keyName in keys {
+        try SendEvent("{" keyName " up}")
+    }
+}
+
+CloseRobloxProcesses() {
+    Loop 6 {
+        pid := ProcessExist("RobloxPlayerBeta.exe")
+        if (!pid)
+            break
+        try ProcessClose(pid)
+        Sleep(500)
+    }
+}
+
 CleanupGdip(exitReason, exitCode) {
     global pToken
+    try ReleaseAutomationInputs()
     Gdip_Shutdown(pToken)
 }

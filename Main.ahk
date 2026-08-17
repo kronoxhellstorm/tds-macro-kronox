@@ -40,9 +40,10 @@ if (A_PtrSize == 4) {
 #Include "%A_ScriptDir%\lib\HyperSleep.ahk"
 #Include "%A_ScriptDir%\lib\ImageSearch\ImageSearch.ahk"
 #Include "%A_ScriptDir%\lib\TowerXP.ahk"
+#Include "%A_ScriptDir%\lib\KronoxFeatures.ahk"
 #Include "%A_ScriptDir%\submacros\updater.ahk"
 
-ver := "1.3.2a-kronox.6"
+ver := "1.3.2a-kronox.7"
 ; Kronox's Edition checks only its own releases and never falls back to upstream builds.
 global ForkUpdateRepository := "kronoxhellstorm/tds-macro-kronox"
 
@@ -156,6 +157,8 @@ global RecordingsDir := A_AppData "\Ultimate_Macro\Recordings"
 global StateFile := A_AppData "\Ultimate_Macro\state.ini"
 global OverallStatsFile := A_AppData "\Ultimate_Macro\overall_stats.ini"
 global RunLedgerFile := A_AppData "\Ultimate_Macro\run_ledger.csv"
+global RunContextFile := A_AppData "\Ultimate_Macro\run_context.csv"
+global StrategyProfileFile := A_AppData "\Ultimate_Macro\strategy_profiles.csv"
 global RuntimeLogDir := A_AppData "\Ultimate_Macro\Logs"
 
 global StratsDir := A_WorkingDir "\Resources\Strats"
@@ -209,6 +212,23 @@ global HostName := IniRead(SettingsFile, "Multiplayer", "HostName", "...")
 global MultiplayerEnabled := IniRead(SettingsFile, "Multiplayer", "MultiplayerEnabled", 0)
 global TowerXPTrackerEnabled := Integer(IniRead(SettingsFile, "TowerXP", "Enabled", 0))
 global TowerXPStopMode := TowerXPStoredStopMode(IniRead(SettingsFile, "TowerXP", "StopMode", "Never"))
+global EvolutionQueueEnabled := Integer(IniRead(SettingsFile, "EvolutionQueue", "Enabled", 0))
+global EvolutionQueueTowers := IniRead(SettingsFile, "EvolutionQueue", "Towers", "")
+global EvolutionQueueAutoEquip := Integer(IniRead(SettingsFile, "EvolutionQueue", "AutoEquip", 1))
+global StrategyProfilerEnabled := Integer(IniRead(SettingsFile, "Analytics", "ProfilerEnabled", 1))
+global WeekendXPBoostEnabled := Integer(IniRead(SettingsFile, "Analytics", "WeekendXPBoost", 1))
+global VIPXPBoostEnabled := Integer(IniRead(SettingsFile, "Analytics", "VIPXPBoost", 0))
+global OtherXPBoostMultiplier := IniRead(SettingsFile, "Analytics", "OtherXPBoost", "1.0")
+global TimeScaleBudgetEnabled := Integer(IniRead(SettingsFile, "ResourceBudget", "TimeScaleEnabled", 0))
+global TimeScaleTicketBalance := Integer(IniRead(SettingsFile, "ResourceBudget", "TicketBalance", 0))
+global TimeScaleTicketReserve := Integer(IniRead(SettingsFile, "ResourceBudget", "TicketReserve", 0))
+global TimeScaleTicketMaxSession := Integer(IniRead(SettingsFile, "ResourceBudget", "TicketMaxPerSession", 0))
+global ConsumableBudgetEnabled := Integer(IniRead(SettingsFile, "ResourceBudget", "ConsumableEnabled", 0))
+global ConsumableMaxPerRun := Integer(IniRead(SettingsFile, "ResourceBudget", "ConsumableMaxPerRun", 0))
+global ConsumableMaxPerSession := Integer(IniRead(SettingsFile, "ResourceBudget", "ConsumableMaxPerSession", 0))
+global UpdateCanaryEnabled := Integer(IniRead(SettingsFile, "UpdateCanary", "Enabled", 1))
+global TDSVersionOverride := IniRead(SettingsFile, "UpdateCanary", "VersionOverride", "")
+global AbsoluteModeEnabled := Integer(IniRead(SettingsFile, "Reliability", "AbsoluteMode", 0))
 
 global DefaultMouseSpeed := IniRead(SettingsFile, "Options", "DefaultMouseSpeed", "2")
 global MouseDelay := IniRead(SettingsFile, "Options", "MouseDelay", "10")
@@ -310,6 +330,7 @@ global LastOpenedTowerID := ""
 global IsRestarting := false
 global SafeExitFlag := false
 global RestartLock := false
+global InputAutomationSuspended := false
 
 global isUiPositionSaved := false
 global isUpgradeAuthorized := false
@@ -653,6 +674,7 @@ if (savedStartTime != 0)
 if (autoRun = 1 && autoStrat != "" && FileExist(autoStrat)) {
     LoadStrategyFile(autoStrat)
     RunningStrategy := true
+    ResumeAutomationInput("automatic-resume")
     ActivateRoblox()
     RunStrategy()
     RunningStrategy := false
@@ -934,18 +956,25 @@ if (needUpdate) {
 }
 
 global FrameX := 30
-global FrameY := 260
+global FrameY := 294
 global FrameW := 640
-global FrameH := 220
-global ContentH := 400
+global FrameH := 227
+global ContentH := 0
 global CurrentScrollPos := 0
 global SliderH := 30
 global ChildHwnd := 0
+global ChildGui := ""
+global SliderBG := ""
+global CustomSlider := ""
+global CommunityFilter := IniRead(SettingsFile, "StrategyLibrary", "Filter", "All")
+global CommunityFavoriteFiles := KronoxStrategyFavoritesParse(IniRead(SettingsFile, "StrategyLibrary", "Favorites", ""))
+global CommunityFilterButtons := []
+global CommunityLibraryCtrls := []
 
-ChildGui := Gui("-Caption +E0x20 +Border +Parent" MainGui.Hwnd)
-ChildGui.BackColor := ThemeColor("App")
-ChildGui.SetFont("s10 cWhite", "Segoe UI")
-width := FrameW - 6
+Tab1_Section2.Text := "Strategy Library"
+MainGui.SetFont("s8 w600 c" ThemeColor("TextMuted"), "Segoe UI")
+global CommunityStrategyCount := MainGui.Add("Text", "x500 y225 w170 h22 Right BackgroundTrans", "0 STRATEGIES")
+CommunityLibraryCtrls.Push(CommunityStrategyCount)
 
 Loop Files, StratsDir "\*.strat" {
     localPath := A_LoopFileFullPath
@@ -955,7 +984,7 @@ Loop Files, StratsDir "\*.strat" {
     sTowers := IniRead(localPath, "Settings", "requiredTowers", "")
     sDesc := IniRead(localPath, "Info", "desc", "")
     sAuthor := IniRead(localPath, "Info", "author", "")
-    sTitle := IniRead(localPath, "Info", "title", "")
+    sTitle := KronoxStrategyDisplayName(IniRead(localPath, "Info", "title", ""), A_LoopFileName)
     sTime := IniRead(localPath, "Info", "time", "")
     sIncome := IniRead(localPath, "Info", "income", "")
     sModifiers := IniRead(localPath, "Settings", "modifiers", "")
@@ -974,150 +1003,44 @@ Loop Files, StratsDir "\*.strat" {
     })
 }
 
-StartY := 15
-CardH  := 115
-CardW  := 600
-Gap    := 15
-
-ContentH := StartY
-
-for index, strat in LoadedStrats {
-    CurrentY := StartY + ((index - 1) * (CardH + Gap))
-    ContentH := CurrentY + CardH + Gap 
-
-    C1X := 10
-    C1Y := CurrentY
-
-    hFrameBg := CreateFrame(CardW, CardH, 10, "0xFF120B0D", "0xFF43242B", "0xFF2D171C")
-    ChildGui.Add("Picture", "x" C1X " y" C1Y " w" CardW " h" CardH " +BackgroundTrans", "HBITMAP:*" hFrameBg)
-
-    hIconBg := CreateGradientButton(56, 56, 8, "0xFF2A1B1D", "0xFF0E090A", "0xff000000", "0x2343242B", "", "Segoe UI", 10, 1)
-    ChildGui.Add("Picture", "x" (C1X + 10) " y" (C1Y + 30) " w76 h76 +BackgroundTrans", "HBITMAP:*" hIconBg)
-    
-    diffImg := "Resources/Strats/images/" strat.difficulty ".png"
-    if !FileExist(diffImg) {
-        LogToConsole("Missing resource file: " diffImg, "Error", 0x1010)
-    } else {
-        ChildGui.Add("Picture", "x" (C1X + 20) " y" (C1Y + 40) " h56 w56 +BackgroundTrans", diffImg)
+communityModes := []
+communityModeSeen := Map()
+for strat in LoadedStrats {
+    modeName := Trim(strat.difficulty)
+    modeKey := StrLower(modeName)
+    if (modeName != "" && !communityModeSeen.Has(modeKey))
+        communityModeSeen[modeKey] := modeName
+}
+for preferredMode in ["Easy", "Intermediate", "Molten", "Fallen", "Frost", "Hardcore", "Voidcore"] {
+    preferredKey := StrLower(preferredMode)
+    if (communityModeSeen.Has(preferredKey)) {
+        communityModes.Push(communityModeSeen[preferredKey])
+        communityModeSeen.Delete(preferredKey)
     }
+}
+for modeKey, modeName in communityModeSeen
+    communityModes.Push(modeName)
 
-    ChildGui.Add("Picture", "x" (C1X + 75) " y" (C1Y + 30) " w76 h76 +BackgroundTrans", "HBITMAP:*" hIconBg)
-    
-    coinsCount := 0
-    if RegExMatch(strat.income, "i)([\d,]+)\s*coins", &match) {
-        coinsCount := Number(StrReplace(match[1], ","))
-    }
+communityFilters := ["All", "Favorites"]
+for modeName in communityModes
+    communityFilters.Push(modeName)
+if (!KronoxArrayContains(communityFilters, CommunityFilter))
+    CommunityFilter := "All"
 
-    if (strat.difficulty = "Hardcore" || strat.difficulty = "Voidcore") {
-        rewardIcon := "Resources/Strats/images/GemsMediumPile.png"
-    } else {
-        if (coinsCount >= 8000) {
-            rewardIcon := "Resources/Strats/images/CoinsSmallChest.png"
-        } else if (coinsCount >= 6000) {
-            rewardIcon := "Resources/Strats/images/CoinsMediumPile.png"
-        } else {
-            rewardIcon := "Resources/Strats/images/CoinsSmallPile.png"
-        }
-    }
-
-    if !FileExist(rewardIcon) {
-        LogToConsole("Missing resource file: " rewardIcon, "Error", 0x1010)
-    } else {
-        ChildGui.Add("Picture", "x" (C1X + 85) " y" (C1Y + 40) " h56 w56 +BackgroundTrans", rewardIcon)
-    }
-
-
-    ChildGui.SetFont("s11 Bold cWhite", "Segoe UI")
-    ChildGui.Add("Text", "x" (C1X + 15) " y" (C1Y + 12) " +BackgroundTrans", strat.title != "" ? strat.title : "Unknown Strat")
- 
-    ChildGui.SetFont("s9 w600 c987D83", "Segoe UI")
-    helpDl1 := ChildGui.Add("Text", "x" (C1X + 580) " y" (C1Y + 10) " +BackgroundTrans", "i") 
-    helpDl1.OnEvent("Click", ((t, a, r, m, d) => (*) => StratInfo(t, a, r, m, d))(
-        strat.title, 
-        strat.author, 
-        strat.towers, 
-        (strat.modifiers != "" ? strat.modifiers : "none"), 
-        strat.desc
-    ))
-
-    ChildGui.SetFont("s9 w400 cF5E9EC", "Segoe UI")
-    ChildGui.Add("Text", "x" (C1X + 260) " y" (C1Y + 15) " w340 +BackgroundTrans", (strat.towers != "" ? strat.towers : "None"))
-
-    ChildGui.SetFont("s9 w400 c987D83", "Segoe UI")
-    ChildGui.Add("Text", "x" (C1X + 260) " y" (C1Y + 36) " w320 +BackgroundTrans", strat.desc)
-
-    if (strat.difficulty = "Hardcore") {
-        badgeColor1 := "0xFFB91F24", badgeColor2 := "0xFF7A151B"
-    } else if (strat.difficulty = "Molten") {
-        badgeColor1 := "0xFFE09334", badgeColor2 := "0xFF8F5413"
-    } else if (strat.difficulty = "Frost") {
-        badgeColor1 := "0xff34a9e0", badgeColor2 := "0xff17559c"
-    } else if (strat.difficulty = "Fallen") {
-        badgeColor1 := "0xFF374151", badgeColor2 := "0xFF1F2937"
-    } else {
-        badgeColor1 := "0xb900ff2a", badgeColor2 := "0xff1a5f39"
-    }
-
-    hgmMode := CreateGradientButton(102, 28, 3, badgeColor1, badgeColor2, "0x40000000", "0x7effffff", strat.difficulty != "" ? strat.difficulty : "Easy", "Segoe UI", 11, 1)
-    ChildGui.Add("Picture", "x" (C1X + 145) " y" (C1Y + 35) " w102 h28 +BackgroundTrans", "HBITMAP:*" hgmMode)
-
-    ChildGui.SetFont("s9 w500 cB79AA0", "Segoe UI")
-    ChildGui.Add("Text", "x" (C1X + 155) " y" (C1Y + 65) " +BackgroundTrans", "🕒 " (strat.time != "" ? strat.time : "Unknown"))
-    ChildGui.Add("Text", "x" (C1X + 155) " y" (C1Y + 83) " +BackgroundTrans", "⛃ " (strat.income != "" ? strat.income : "Unknown"))
-
-    hBtnNormal := CreateGradientButton(220, 38, 8, "0xFFB91F24", "0xFF7A151B", "0x40000000", "0x5dffffff", "Load", "Segoe UI", 14, 1)
-    hBtnHover := CreateGradientButton(220, 38, 8, "0xFFFF4545", "0xFFEF2B2D", "0x60000000", "0x5dffffff", "Load", "Segoe UI", 14, 1)
-
-    picLoadBtn := ChildGui.Add("Picture", "x" (C1X + 365) " y" (C1Y + 68) " w220 h38 +BackgroundTrans", "HBITMAP:*" hBtnNormal)
-
-    dl1 := ChildGui.Add("Text", "x" (C1X + 365) " y" (C1Y + 68) " w220 h38 +BackgroundTrans +0x200 Center", "")
-    dl1.SetFont("cFFFFFF s10 Bold", "Segoe UI")
-    
-    dl1.StratFile := strat.fileName
-    dl1.OnEvent("Click", DownloadStrat)
-
-    dl1.PicControl := picLoadBtn  
-    dl1.ImgNormal := hBtnNormal   
-    dl1.ImgHover := hBtnHover    
-    GradientButtons.Push(dl1) 
+filterGap := 4
+filterWidth := Floor((640 - (communityFilters.Length - 1) * filterGap) / communityFilters.Length)
+for index, filterName in communityFilters {
+    filterX := 30 + ((index - 1) * (filterWidth + filterGap))
+    MainGui.SetFont("s8 w600 c" ThemeColor("TextSecondary"), "Segoe UI")
+    filterCtrl := MainGui.Add("Text", "x" filterX " y258 w" filterWidth " h26 Center +0x200 Background" ThemeColor("Surface"), filterName)
+    filterCtrl.FilterName := filterName
+    filterCtrl.OnEvent("Click", SelectCommunityStrategyFilter)
+    CommunityFilterButtons.Push(filterCtrl)
+    CommunityLibraryCtrls.Push(filterCtrl)
 }
 
-if (LoadedStrats.Length == 0) {
-    ChildGui.SetFont("s12 c987D83", "Segoe UI")
-    ChildGui.Add("Text", "x0 y0 w" FrameW " h" FrameH " +BackgroundTrans Center +0x200", "No strategies found.")
-    ContentH := 220
-}
-
-SliderX := FrameW - 10 
-SliderW := 6 
-
-if (ContentH > 0) {
-    SliderH := Round(FrameH * (FrameH / ContentH))
-    
-    if (ContentH <= FrameH) {
-        SliderH := FrameH
-    } else {
-        SliderH := Max(30, SliderH)
-    }
-    
-    if (ContentH > FrameH && CurrentScrollPos > 0) {
-        maxScroll := ContentH - FrameH
-        scrollPercent := CurrentScrollPos / maxScroll
-        sliderPos := Round(scrollPercent * (FrameH - SliderH))
-        sliderPos := Max(0, Min(sliderPos, FrameH - SliderH))
-    } else {
-        sliderPos := 0
-    }
-    
-    hSlider := CreateScrollThumb(SliderW, SliderH, 3, "0xFFEF2B2D", "0xFFB91F24", "0xFF351215")
-    hSliderBG := CreateScrollThumb(SliderW, FrameH, 3, "0xff000000", "0xff000000", "0x000000")
-    
-    global SliderBG := ChildGui.Add("Picture", "x" SliderX " y0 w" SliderW " h" FrameH+ContentH " +BackgroundTrans", "HBITMAP:*" hSliderBG)
-    global CustomSlider := ChildGui.Add("Picture", "x" SliderX " y" sliderPos " w" SliderW " h" SliderH " +BackgroundTrans", "HBITMAP:*" hSlider)
-    
-    SliderBG.Visible := true
-    CustomSlider.Visible := true
-}
+RefreshCommunityFilterStyles()
+BuildCommunityStrategyGui()
 
 OnMessage(0x0115, OnScroll)
 OnMessage(0x020A, OnMouseWheel)
@@ -1590,6 +1513,106 @@ for towerIndex, towerDef in TowerXPDefinitions() {
         TowerXPSettingsCtrls.Push(rowCtrl)
 }
 
+; Kronox automation lab lives inside the existing scrollable Settings page so
+; the title bar remains compact and every runtime-affecting option is saved by
+; the same explicit Save action.
+MainGui.SetFont("s10 w600 cEF2B2D", "Segoe UI")
+global EvolutionQueueSection := MainGui.Add("Text", "x30 y890 w260 h22 Hidden BackgroundTrans", "Abstract Evolution Queue")
+global EvolutionQueueLine := MainGui.Add("Progress", "x30 y913 w640 h1 Hidden Background43242B", 0)
+MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
+global EvolutionQueueEnabledCtrl := MainGui.Add("Checkbox", "x30 y928 w145 h22 Hidden", "Enable evolution queue")
+EvolutionQueueEnabledCtrl.Value := EvolutionQueueEnabled
+global EvolutionQueueAutoEquipCtrl := MainGui.Add("Checkbox", "x200 y928 w185 h22 Hidden", "Auto-equip the next batch")
+EvolutionQueueAutoEquipCtrl.Value := EvolutionQueueAutoEquip
+MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
+global EvolutionQueueLabelCtrl := MainGui.Add("Text", "x30 y958 w90 h18 Hidden", "QUEUE ORDER")
+MainGui.SetFont("s8 w400 c000000", "Segoe UI")
+global EvolutionQueueTowersCtrl := MainGui.Add("Edit", "x125 y954 w545 h22 Hidden", EvolutionQueueTowers)
+DllCall("SendMessage", "Ptr", EvolutionQueueTowersCtrl.Hwnd, "UInt", 0x1501, "Ptr", 1,
+    "Str", "Example: Operator, Juggernaut, Kingpin")
+MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
+global EvolutionQueueHelpCtrl := MainGui.Add("Text", "x30 y982 w640 h32 Hidden BackgroundTrans",
+    "Type Tower Evolution names separated by commas, in the order you want them leveled.`nExample: Operator, Juggernaut, Kingpin. One tower is assigned to each active Abstract slot.")
+global EvolutionQueueStatusCtrl := MainGui.Add("Text", "x30 y1018 w640 h38 Hidden Background180E11 +Border 0x200",
+    "  Current slots: " KronoxEvolutionAssignmentText(SettingsFile) "`n  At level 20, the finished tower leaves the batch and the next name moves in.")
+
+MainGui.SetFont("s10 w600 cEF2B2D", "Segoe UI")
+global AnalyticsLabSection := MainGui.Add("Text", "x30 y1068 w260 h22 Hidden BackgroundTrans", "Profiler + Boost Analytics")
+global AnalyticsLabLine := MainGui.Add("Progress", "x30 y1091 w640 h1 Hidden Background43242B", 0)
+MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
+global StrategyProfilerEnabledCtrl := MainGui.Add("Checkbox", "x30 y1106 w170 h22 Hidden", "Profile strategy steps")
+StrategyProfilerEnabledCtrl.Value := StrategyProfilerEnabled
+global WeekendXPBoostCtrl := MainGui.Add("Checkbox", "x220 y1106 w180 h22 Hidden", "Weekend 2x XP context")
+WeekendXPBoostCtrl.Value := WeekendXPBoostEnabled
+global VIPXPBoostCtrl := MainGui.Add("Checkbox", "x420 y1106 w115 h22 Hidden", "VIP 1.25x XP")
+VIPXPBoostCtrl.Value := VIPXPBoostEnabled
+MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
+global OtherXPBoostLabelCtrl := MainGui.Add("Text", "x545 y1109 w75 h18 Hidden", "OTHER XP x")
+MainGui.SetFont("s8 w400 c000000", "Segoe UI")
+global OtherXPBoostCtrl := MainGui.Add("Edit", "x625 y1105 w45 h22 Center Hidden", OtherXPBoostMultiplier)
+MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
+global ProfilerStatusCtrl := MainGui.Add("Text", "x30 y1136 w640 h22 Hidden BackgroundTrans", "Last profile: " KronoxProfilerSummary(StateFile))
+
+MainGui.SetFont("s10 w600 cEF2B2D", "Segoe UI")
+global ResourceBudgetSection := MainGui.Add("Text", "x30 y1170 w260 h22 Hidden BackgroundTrans", "Resource Budget Guard")
+global ResourceBudgetLine := MainGui.Add("Progress", "x30 y1193 w640 h1 Hidden Background43242B", 0)
+MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
+global TimeScaleBudgetEnabledCtrl := MainGui.Add("Checkbox", "x30 y1208 w165 h22 Hidden", "Guard timescale tickets")
+TimeScaleBudgetEnabledCtrl.Value := TimeScaleBudgetEnabled
+MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
+global TicketBalanceLabelCtrl := MainGui.Add("Text", "x210 y1211 w55 h18 Hidden", "BALANCE")
+global TicketReserveLabelCtrl := MainGui.Add("Text", "x330 y1211 w55 h18 Hidden", "RESERVE")
+global TicketSessionLabelCtrl := MainGui.Add("Text", "x450 y1211 w90 h18 Hidden", "SESSION CAP (0=∞)")
+MainGui.SetFont("s8 w400 c000000", "Segoe UI")
+global TicketBalanceCtrl := MainGui.Add("Edit", "x270 y1207 w48 h22 Center Number Limit6 Hidden", TimeScaleTicketBalance)
+global TicketReserveCtrl := MainGui.Add("Edit", "x390 y1207 w48 h22 Center Number Limit6 Hidden", TimeScaleTicketReserve)
+global TicketSessionCtrl := MainGui.Add("Edit", "x550 y1207 w55 h22 Center Number Limit6 Hidden", TimeScaleTicketMaxSession)
+MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
+global ConsumableBudgetEnabledCtrl := MainGui.Add("Checkbox", "x30 y1238 w165 h22 Hidden", "Guard consumable steps")
+ConsumableBudgetEnabledCtrl.Value := ConsumableBudgetEnabled
+MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
+global ConsumableRunLabelCtrl := MainGui.Add("Text", "x210 y1241 w105 h18 Hidden", "MAX / RUN (0=∞)")
+global ConsumableSessionLabelCtrl := MainGui.Add("Text", "x390 y1241 w125 h18 Hidden", "MAX / SESSION (0=∞)")
+MainGui.SetFont("s8 w400 c000000", "Segoe UI")
+global ConsumableRunCtrl := MainGui.Add("Edit", "x320 y1237 w48 h22 Center Number Limit4 Hidden", ConsumableMaxPerRun)
+global ConsumableSessionCtrl := MainGui.Add("Edit", "x520 y1237 w55 h22 Center Number Limit5 Hidden", ConsumableMaxPerSession)
+
+MainGui.SetFont("s10 w600 cEF2B2D", "Segoe UI")
+global UpdateCanarySection := MainGui.Add("Text", "x30 y1278 w260 h22 Hidden BackgroundTrans", "TDS Update Canary")
+global UpdateCanaryLine := MainGui.Add("Progress", "x30 y1301 w640 h1 Hidden Background43242B", 0)
+MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
+global UpdateCanaryEnabledCtrl := MainGui.Add("Checkbox", "x30 y1316 w205 h22 Hidden", "Guard the first run after updates")
+UpdateCanaryEnabledCtrl.Value := UpdateCanaryEnabled
+MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
+global TDSVersionOverrideLabelCtrl := MainGui.Add("Text", "x260 y1319 w145 h18 Hidden", "VERSION OVERRIDE (optional)")
+MainGui.SetFont("s8 w400 c000000", "Segoe UI")
+global TDSVersionOverrideCtrl := MainGui.Add("Edit", "x415 y1315 w110 h22 Hidden", TDSVersionOverride)
+MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
+global UpdateCanaryStatusCtrl := MainGui.Add("Text", "x30 y1346 w640 h36 Hidden Background180E11 +Border 0x200", "  Last observed: " IniRead(SettingsFile, "UpdateCanary", "LastObservedVersion", "Not detected yet") "`n  A failed or stalled canary stops unattended looping instead of repeatedly retrying.")
+
+MainGui.SetFont("s10 w600 cEF2B2D", "Segoe UI")
+global AbsoluteModeSection := MainGui.Add("Text", "x30 y1394 w300 h22 Hidden BackgroundTrans", "Absolute Mode / Stall Recovery")
+global AbsoluteModeLine := MainGui.Add("Progress", "x30 y1417 w640 h1 Hidden Background43242B", 0)
+MainGui.SetFont("s9 w600 cFFFFFF", "Segoe UI")
+global AbsoluteModeEnabledCtrl := MainGui.Add("Checkbox", "x30 y1432 w210 h22 Hidden", "Enable Absolute Mode")
+AbsoluteModeEnabledCtrl.Value := AbsoluteModeEnabled
+MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
+global AbsoluteModeInfoCtrl := MainGui.Add("Text", "x30 y1460 w640 h48 Hidden Background180E11 +Border 0x200",
+    "  Releases all held input, closes Roblox, and restarts after 5 minutes stuck joining or 10 minutes with no confirmed progress.`n  Intended for unattended runs. TDS Update Canary safety stops still take priority.")
+
+global KronoxFeatureSettingsCtrls := [EvolutionQueueSection, EvolutionQueueLine,
+    EvolutionQueueEnabledCtrl, EvolutionQueueAutoEquipCtrl, EvolutionQueueLabelCtrl,
+    EvolutionQueueTowersCtrl, EvolutionQueueHelpCtrl, EvolutionQueueStatusCtrl, AnalyticsLabSection, AnalyticsLabLine,
+    StrategyProfilerEnabledCtrl, WeekendXPBoostCtrl, VIPXPBoostCtrl, OtherXPBoostLabelCtrl,
+    OtherXPBoostCtrl, ProfilerStatusCtrl, ResourceBudgetSection, ResourceBudgetLine,
+    TimeScaleBudgetEnabledCtrl, TicketBalanceLabelCtrl, TicketReserveLabelCtrl,
+    TicketSessionLabelCtrl, TicketBalanceCtrl, TicketReserveCtrl, TicketSessionCtrl,
+    ConsumableBudgetEnabledCtrl, ConsumableRunLabelCtrl, ConsumableSessionLabelCtrl,
+    ConsumableRunCtrl, ConsumableSessionCtrl, UpdateCanarySection, UpdateCanaryLine,
+    UpdateCanaryEnabledCtrl, TDSVersionOverrideLabelCtrl, TDSVersionOverrideCtrl,
+    UpdateCanaryStatusCtrl, AbsoluteModeSection, AbsoluteModeLine, AbsoluteModeEnabledCtrl,
+    AbsoluteModeInfoCtrl]
+
 MainGui.SetFont("s11 w400 cFFFFFF")
 global Tab5_Btn1 := MainGui.Add("Text", "x30 y545 w645 h40 Center Background120B0D +Border 0x200 Hidden", "Save all settings")
 Tab5_Btn1.OnEvent("Click", SaveAllSettings)
@@ -1621,6 +1644,8 @@ global SettingsScrollableCtrls := [Tab5_Section1, Tab5_Line1, Tab5_Lbl1, ChainKe
     UseVipServerCtrl, AlwaysOnTopCtrl]
 for towerXPSettingCtrl in TowerXPSettingsCtrls
     SettingsScrollableCtrls.Push(towerXPSettingCtrl)
+for featureSettingCtrl in KronoxFeatureSettingsCtrls
+    SettingsScrollableCtrls.Push(featureSettingCtrl)
 
 ; tab 6 - tools ===========================
 
@@ -1656,7 +1681,7 @@ global Stats_Subtitle := MainGui.Add("Text", "x30 y133 w640 Hidden Center", "Con
 MainGui.SetFont("s8 w650 cB79AA0", "Segoe UI")
 global Stats_ScopeLabel := MainGui.Add("Text", "x30 y153 w54 h22 Hidden 0x200", "VIEW")
 MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
-global Stats_ScopeCtrl := MainGui.Add("DropDownList", "x84 y150 w150 Hidden Choose1", ["Overall", "By Map", "By Gamemode", "By Strategy"])
+global Stats_ScopeCtrl := MainGui.Add("DropDownList", "x84 y150 w150 Hidden Choose1", ["Overall", "By Map", "By Gamemode", "By Strategy", "By Modifiers", "By XP Boost"])
 global Stats_FilterCtrl := MainGui.Add("DropDownList", "x248 y150 w312 Hidden Disabled", ["All tracked runs"])
 global StatsFilterSections := []
 Stats_ScopeCtrl.OnEvent("Change", StatsScopeChanged)
@@ -1694,15 +1719,15 @@ global Stats_CoinsValue := MainGui.Add("Text", "x40 y275 w180 h27 Hidden Center 
 global Stats_GemsValue := MainGui.Add("Text", "x260 y275 w180 h27 Hidden Center BackgroundTrans", "0")
 global Stats_XPValue := MainGui.Add("Text", "x480 y275 w180 h27 Hidden Center BackgroundTrans", "0")
 
-global Stats_DetailsBG := MainGui.Add("Progress", "x30 y323 w400 h132 Hidden Disabled Background1A1113", 0)
-global Stats_RecentBG := MainGui.Add("Progress", "x440 y323 w230 h132 Hidden Disabled Background1A1113", 0)
+global Stats_DetailsBG := MainGui.Add("Progress", "x30 y323 w400 h150 Hidden Disabled Background1A1113", 0)
+global Stats_RecentBG := MainGui.Add("Progress", "x440 y323 w230 h150 Hidden Disabled Background1A1113", 0)
 MainGui.SetFont("s8 w700 cEF2B2D", "Segoe UI")
 global Stats_DetailsTitle := MainGui.Add("Text", "x47 y335 w365 h16 Hidden BackgroundTrans", "EFFICIENCY + DATA QUALITY")
 global Stats_RecentTitle := MainGui.Add("Text", "x457 y335 w196 h16 Hidden BackgroundTrans", "RECENT CONFIRMED RESULTS")
 MainGui.SetFont("s9 w400 cF5E9EC", "Segoe UI")
-global Stats_Details := MainGui.Add("Text", "x47 y356 w365 h86 Hidden BackgroundTrans", "No completed matches have been recorded yet.")
+global Stats_Details := MainGui.Add("Text", "x47 y356 w365 h108 Hidden BackgroundTrans", "No completed matches have been recorded yet.")
 MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
-global Stats_Recent := MainGui.Add("Text", "x457 y356 w196 h86 Hidden BackgroundTrans", "No confirmed results yet.")
+global Stats_Recent := MainGui.Add("Text", "x457 y356 w196 h108 Hidden BackgroundTrans", "No confirmed results yet.")
 
 global StatsCtrls := [Stats_Kicker, Stats_TITLE, Stats_Subtitle, Stats_ScopeLabel, Stats_ScopeCtrl, Stats_FilterCtrl,
     Stats_MatchesBG, Stats_WinsBG, Stats_LossesBG, Stats_WinRateBG, Stats_CoverageBG,
@@ -2001,7 +2026,9 @@ Hoverwatchdog(*) {
     if (!hMain)
         hMain := MainGui.Hwnd
         
-    if (!hChild && IsSet(ChildGui))
+    ; The strategy library rebuilds its child window when a filter or favorite changes.
+    ; Refreshing this handle keeps hover hit-testing attached to the current card list.
+    if (IsSet(ChildGui) && IsObject(ChildGui))
         hChild := ChildGui.Hwnd
     
     oldMode := A_CoordModeMouse
@@ -2216,7 +2243,7 @@ HideAllTabContent() {
 
 CenterLegacyTabLayouts() {
     static centered := false
-    global MainWindowWidth, FrameX, Tab2Ctrls, TAB3, StatsCtrls, CreditsCtrls, TowerXPSettingsCtrls
+    global MainWindowWidth, FrameX, Tab2Ctrls, TAB3, StatsCtrls, CreditsCtrls, TowerXPSettingsCtrls, KronoxFeatureSettingsCtrls, CommunityLibraryCtrls
     if (centered)
         return
     centered := true
@@ -2231,6 +2258,7 @@ CenterLegacyTabLayouts() {
          Tab1_Lbl2, Strategy2Ctrl, Tab1_Btn3, Tab1_Btn4, RotateStrategiesCtrl, SwapAfterLbl,
          SwapAmountCtrl, SwapUnitCtrl, AutoEquipCtrl, AbstractCountLabel, AbstractCountCtrl,
          Tab1_Section2, Tab1_Line2, Tab1_Start, Tab1_Stop],
+        CommunityLibraryCtrls,
         Tab2Ctrls,
         TAB3,
         [Tab4_Title, Tab4_Line1, Tab4_Lbl1, WebhookLinkCtrl, WebhookEnabledCtrl, Tab4_Line2,
@@ -2251,6 +2279,7 @@ CenterLegacyTabLayouts() {
          HoloKeyCtrl, RaiseDeadTEXT, UseRaiseDeadKeyCtrl, Tab5_Line4, Tab5_Lbl4, VipLinkCtrl,
          UseVipServerCtrl, AlwaysOnTopCtrl, Tab5_Btn1],
         TowerXPSettingsCtrls,
+        KronoxFeatureSettingsCtrls,
         [Tools_Section, Tools_Section_Line, Tools_Info, Auto_COA, Auto_Spin, Auto_Consum],
         StatsCtrls,
         CreditsCtrls
@@ -2268,11 +2297,13 @@ CenterLegacyTabLayouts() {
 }
 
 ShowTabContent(tab) {
-    global ChildGui
+    global ChildGui, CommunityLibraryCtrls
     if (tab = "Tab1") {
         for ctrl in [Tab1_Section1, Tab1_Line1, Tab1_Lbl1, Strategy1Ctrl, Tab1_Btn1, Tab1_Btn2,
                      Tab1_Lbl2, Strategy2Ctrl, Tab1_Btn3, Tab1_Btn4, RotateStrategiesCtrl, AutoEquipCtrl, Tab1_Section2, Tab1_Line2,
                      Tab1_Start, Tab1_Stop]
+            ctrl.Visible := true
+        for ctrl in CommunityLibraryCtrls
             ctrl.Visible := true
         EnableStratRotation()
         UpdateAbstractPlacementControls()
@@ -2334,6 +2365,9 @@ ShowTabContent(tab) {
         KeyDelayUpDown.Value := KeyDelay
         KeyDelayTxt.Value := KeyDelay
         UpdateTowerXPControlState()
+        EvolutionQueueStatusCtrl.Text := "  Current slots: " KronoxEvolutionAssignmentText(SettingsFile) "`n  At level 20, the finished tower leaves the batch and the next name moves in."
+        ProfilerStatusCtrl.Text := "Last profile: " KronoxProfilerSummary(StateFile)
+        UpdateCanaryStatusCtrl.Text := "  Last observed: " IniRead(SettingsFile, "UpdateCanary", "LastObservedVersion", "Not detected yet") "`n  A failed or stalled canary stops unattended looping instead of repeatedly retrying."
         SettingsScrollTrack.Visible := true
         SettingsScrollThumb.Visible := true
         ApplySettingsScroll()
@@ -2383,7 +2417,10 @@ StatsScopeChanged(*) {
         return
     }
 
-    prefix := (scope = "By Map") ? "Map_" : ((scope = "By Gamemode") ? "Mode_" : "Strategy_")
+    prefix := (scope = "By Map") ? "Map_"
+        : ((scope = "By Gamemode") ? "Mode_"
+        : ((scope = "By Strategy") ? "Strategy_"
+        : ((scope = "By Modifiers") ? "Modifier_" : "Boost_")))
     labels := []
     sectionNames := ""
     if FileExist(OverallStatsFile) {
@@ -2399,7 +2436,10 @@ StatsScopeChanged(*) {
     }
 
     if (labels.Length = 0) {
-        emptyLabel := (scope = "By Map") ? "No map data yet" : ((scope = "By Gamemode") ? "No gamemode data yet" : "No strategy-version data yet")
+        emptyLabel := (scope = "By Map") ? "No map data yet"
+            : ((scope = "By Gamemode") ? "No gamemode data yet"
+            : ((scope = "By Strategy") ? "No strategy-version data yet"
+            : ((scope = "By Modifiers") ? "No modifier data yet" : "No boost-context data yet")))
         Stats_FilterCtrl.Add([emptyLabel])
         Stats_FilterCtrl.Choose(1)
         Stats_FilterCtrl.Enabled := false
@@ -2433,11 +2473,18 @@ UpdateOverallStatsUI() {
             displayName := Stats_FilterCtrl.Text
         } else {
             section := "NoData"
-            displayName := (scope = "By Map") ? "No map data yet" : ((scope = "By Gamemode") ? "No gamemode data yet" : "No strategy-version data yet")
+            displayName := (scope = "By Map") ? "No map data yet"
+                : ((scope = "By Gamemode") ? "No gamemode data yet"
+                : ((scope = "By Strategy") ? "No strategy-version data yet"
+                : ((scope = "By Modifiers") ? "No modifier data yet" : "No boost-context data yet")))
         }
     }
 
-    Stats_TITLE.Text := (scope = "Overall") ? "Overall Statistics" : ((scope = "By Map") ? "Map Statistics" : ((scope = "By Gamemode") ? "Gamemode Statistics" : "Strategy Version Statistics"))
+    Stats_TITLE.Text := (scope = "Overall") ? "Overall Statistics"
+        : ((scope = "By Map") ? "Map Statistics"
+        : ((scope = "By Gamemode") ? "Gamemode Statistics"
+        : ((scope = "By Strategy") ? "Strategy Version Statistics"
+        : ((scope = "By Modifiers") ? "Modifier ROI Statistics" : "XP Boost Statistics"))))
     Stats_Subtitle.Text := (scope = "Overall") ? "Confirmed outcomes, run coverage, and strategy efficiency" : "Lifetime view: " displayName
 
     wins := Integer(IniRead(OverallStatsFile, section, "TotalTriumphs", 0))
@@ -2445,6 +2492,9 @@ UpdateOverallStatsUI() {
     coins := Integer(IniRead(OverallStatsFile, section, "Coins", 0))
     gems := Integer(IniRead(OverallStatsFile, section, "Gems", 0))
     exp := Integer(IniRead(OverallStatsFile, section, "EXP", 0))
+    normalizedExp := Integer(IniRead(OverallStatsFile, section, "NormalizedEXP", 0))
+    boostTrackedRuns := Integer(IniRead(OverallStatsFile, section, "BoostTrackedRuns", 0))
+    boostTrackedSeconds := Integer(IniRead(OverallStatsFile, section, "BoostTrackedSeconds", 0))
     totalSeconds := Integer(IniRead(OverallStatsFile, section, "TotalTimeSeconds", 0))
     lastUpdated := IniRead(OverallStatsFile, section, "LastUpdated", "Never")
 
@@ -2462,6 +2512,7 @@ UpdateOverallStatsUI() {
     coinsPerHour := (elapsedHours > 0) ? Round(coins / elapsedHours) : 0
     gemsPerHour := (elapsedHours > 0) ? Round(gems / elapsedHours) : 0
     expPerHour := (elapsedHours > 0) ? Round(exp / elapsedHours) : 0
+    normalizedExpPerHour := (boostTrackedSeconds > 0) ? Round(normalizedExp / (boostTrackedSeconds / 3600)) : 0
     averageSeconds := (matches > 0) ? Round(totalSeconds / matches) : 0
 
     Stats_MatchesValue.Text := FormatStatsNumber(starts)
@@ -2483,6 +2534,8 @@ UpdateOverallStatsUI() {
             . "`nCoverage " coverage "%  •  Unconfirmed " unconfirmed "  •  Aborted " aborted "  •  Active " active
             . "`nBest coins: " FindBestStatsBreakdown("Map_", "Coins")
             . "  |  Best XP: " FindBestStatsBreakdown("Map_", "EXP")
+            . "`nBase XP/h " FormatStatsNumber(normalizedExpPerHour) " (" boostTrackedRuns " boost-tagged)"
+            . "  |  Best modifier: " FindBestModifierROI()
     } else {
         Stats_Details.Text := "Coins/h " FormatStatsNumber(coinsPerHour)
             . "  •  Gems/h " FormatStatsNumber(gemsPerHour)
@@ -2490,6 +2543,12 @@ UpdateOverallStatsUI() {
             . "`nAverage " FormatStatsDuration(averageSeconds) "  •  Confirmed W/L " wlRatio
             . "`nCoverage " coverage "%  •  Unconfirmed " unconfirmed "  •  Aborted " aborted "  •  Active " active
             . "`nTracked " FormatStatsDuration(totalSeconds) "  •  Updated " lastUpdated
+        if (scope = "By Modifiers")
+            Stats_Details.Text .= "`nNominal reward x" IniRead(OverallStatsFile, section, "ModifierMultiplier", 1) "  •  observed ROI uses confirmed runtime"
+        else if (scope = "By XP Boost")
+            Stats_Details.Text .= "`nBoost-normalized XP/h " FormatStatsNumber(normalizedExpPerHour) "  •  " boostTrackedRuns " tagged runs"
+        else if (scope = "By Strategy")
+            Stats_Details.Text .= "`nProfiler: " KronoxProfilerSummary(StateFile)
     }
 
     Stats_Recent.Text := BuildRecentRunsText()
@@ -2509,7 +2568,37 @@ StatsViewHasActiveRun(scope, displayName) {
         return (IniRead(StateFile, "State", "ActiveMode", "") = displayName)
     if (scope = "By Strategy")
         return (IniRead(StateFile, "State", "ActiveStrategyDisplay", "") = displayName)
+    if (scope = "By Modifiers")
+        return (KronoxCanonicalModifierSet(IniRead(StateFile, "State", "ActiveModifiers", "")) = displayName)
+    if (scope = "By XP Boost")
+        return (IniRead(StateFile, "State", "ActiveXPBoostProfile", "") = displayName)
     return false
+}
+
+FindBestModifierROI() {
+    global OverallStatsFile
+    if !FileExist(OverallStatsFile)
+        return "No data"
+    sections := ""
+    try sections := IniRead(OverallStatsFile)
+    bestName := "No proven set"
+    bestRate := -1
+    for section in StrSplit(sections, "`n", "`r") {
+        if (SubStr(section, 1, 9) != "Modifier_")
+            continue
+        wins := Integer(IniRead(OverallStatsFile, section, "TotalTriumphs", 0))
+        losses := Integer(IniRead(OverallStatsFile, section, "TotalLosses", 0))
+        matches := wins + losses
+        totalSeconds := Integer(IniRead(OverallStatsFile, section, "TotalTimeSeconds", 0))
+        if (matches < 3 || totalSeconds <= 0)
+            continue
+        rate := Round(Integer(IniRead(OverallStatsFile, section, "Coins", 0)) / (totalSeconds / 3600))
+        if (rate > bestRate) {
+            bestRate := rate
+            bestName := IniRead(OverallStatsFile, section, "DisplayName", "Unknown") " (" FormatStatsNumber(rate) "/h, n=" matches ")"
+        }
+    }
+    return bestName
 }
 
 BuildRecentRunsText() {
@@ -2583,7 +2672,8 @@ FormatStatsDuration(totalSeconds) {
 }
 
 BeginTrackedRun() {
-    global StateFile, OverallStatsFile, RunLedgerFile, gamemap, difficulty, modifiers
+    global StateFile, OverallStatsFile, RunLedgerFile, RunContextFile, StrategyProfileFile
+    global SettingsFile, gamemap, difficulty, modifiers
 
     ResolveActiveRunWithoutResult("Unconfirmed", "next-run-started")
 
@@ -2594,6 +2684,8 @@ BeginTrackedRun() {
 
     fingerprint := GetStrategyFingerprint(strategyPath)
     strategyDisplay := strategyName " [" fingerprint "]"
+    modifierDisplay := KronoxCanonicalModifierSet(modifiers)
+    boostContext := KronoxXPBoostContext(SettingsFile)
     runId := FormatTime(, "yyyyMMdd-HHmmss") "-" Format("{:03}", A_MSec) "-" DllCall("GetCurrentProcessId")
     startedAt := FormatTime(, "yyyy-MM-dd HH:mm:ss")
 
@@ -2601,6 +2693,8 @@ BeginTrackedRun() {
     RegisterStatsRunStart(OverallStatsFile, "Map", gamemap)
     RegisterStatsRunStart(OverallStatsFile, "Mode", difficulty)
     RegisterStatsRunStart(OverallStatsFile, "Strategy", strategyDisplay)
+    RegisterStatsRunStart(OverallStatsFile, "Modifier", modifierDisplay)
+    RegisterStatsRunStart(OverallStatsFile, "Boost", boostContext.profile)
     sessionStarts := Integer(IniRead(StateFile, "State", "RunStarts", 0)) + 1
     IniWrite(sessionStarts, StateFile, "State", "RunStarts")
 
@@ -2614,9 +2708,22 @@ BeginTrackedRun() {
     IniWrite(gamemap, StateFile, "State", "ActiveMap")
     IniWrite(difficulty, StateFile, "State", "ActiveMode")
     IniWrite(String(modifiers), StateFile, "State", "ActiveModifiers")
+    IniWrite(modifierDisplay, StateFile, "State", "ActiveModifierDisplay")
+    IniWrite(boostContext.profile, StateFile, "State", "ActiveXPBoostProfile")
+    IniWrite(boostContext.factor, StateFile, "State", "ActiveXPBoostFactor")
+
+    KronoxBudgetBeginRun(StateFile)
+    profilerEnabled := KronoxFeatureBool(IniRead(SettingsFile, "Analytics", "ProfilerEnabled", 1))
+    IniWrite(profilerEnabled ? 1 : 0, StateFile, "Profiler", "Enabled")
+    KronoxProfilerBegin(profilerEnabled, runId, strategyName, fingerprint, StrategyProfileFile, StateFile)
 
     AppendRunLedgerEvent(RunLedgerFile, runId, "STARTED", "Active", "strategy-playback-started",
         strategyName, fingerprint, gamemap, difficulty, String(modifiers))
+    KronoxAppendRunContextEvent(RunContextFile, runId, "STARTED", boostContext.profile, boostContext.factor,
+        modifierDisplay, KronoxModifierMultiplier(modifiers), TimeScaleMode,
+        IniRead(StateFile, "State", "ActiveTDSVersion", "Unknown"),
+        KronoxFeatureBool(IniRead(StateFile, "State", "CanaryActive", 0)) ? "Canary" : "Normal")
+    return runId
 }
 
 ResolveActiveRunWithoutResult(status, detection) {
@@ -2632,6 +2739,8 @@ ResolveActiveRunWithoutResult(status, detection) {
     mapName := IniRead(StateFile, "State", "ActiveMap", "Unknown")
     modeName := IniRead(StateFile, "State", "ActiveMode", "Unknown")
     modifiersText := IniRead(StateFile, "State", "ActiveModifiers", "")
+    modifierDisplay := IniRead(StateFile, "State", "ActiveModifierDisplay", KronoxCanonicalModifierSet(modifiersText))
+    boostProfile := IniRead(StateFile, "State", "ActiveXPBoostProfile", "Base XP")
     startedTick := Integer(IniRead(StateFile, "State", "ActiveRunStartedTick", 0))
     duration := (startedTick > 0 && A_TickCount >= startedTick) ? Round((A_TickCount - startedTick) / 1000) : 0
 
@@ -2639,6 +2748,8 @@ ResolveActiveRunWithoutResult(status, detection) {
     RegisterIncompleteRunStats(OverallStatsFile, "Map", mapName, status)
     RegisterIncompleteRunStats(OverallStatsFile, "Mode", modeName, status)
     RegisterIncompleteRunStats(OverallStatsFile, "Strategy", strategyDisplay, status)
+    RegisterIncompleteRunStats(OverallStatsFile, "Modifier", modifierDisplay, status)
+    RegisterIncompleteRunStats(OverallStatsFile, "Boost", boostProfile, status)
     sessionKey := (status = "Aborted") ? "RunAborted" : "RunUnconfirmed"
     IniWrite(Integer(IniRead(StateFile, "State", sessionKey, 0)) + 1, StateFile, "State", sessionKey)
     AppendRunLedgerEvent(RunLedgerFile, runId, "RESULT", status, detection,
@@ -2685,7 +2796,7 @@ ClearActiveRunState() {
 
     for key in ["ActiveRunId", "ActiveRunStartedAt", "ActiveRunStartedTick", "ActiveStrategyPath",
         "ActiveStrategyName", "ActiveStrategyFingerprint", "ActiveStrategyDisplay", "ActiveMap",
-        "ActiveMode", "ActiveModifiers"]
+        "ActiveMode", "ActiveModifiers", "ActiveModifierDisplay", "ActiveXPBoostProfile", "ActiveXPBoostFactor"]
         try IniDelete(StateFile, "State", key)
 }
 
@@ -2726,6 +2837,181 @@ AppendRunLedgerEvent(file, runId, eventName, status, detection, strategyName, fi
 
 LedgerCsvField(value) {
     return '"' StrReplace(String(value), '"', '""') '"'
+}
+
+SelectCommunityStrategyFilter(ctrl, *) {
+    global CommunityFilter, SettingsFile
+    if (CommunityFilter = ctrl.FilterName)
+        return
+    CommunityFilter := ctrl.FilterName
+    IniWrite(CommunityFilter, SettingsFile, "StrategyLibrary", "Filter")
+    RefreshCommunityFilterStyles()
+    SetTimer(RebuildCommunityStrategyGui, -10)
+}
+
+ToggleCommunityStrategyFavorite(ctrl, *) {
+    global CommunityFavoriteFiles, SettingsFile
+    key := KronoxStrategyFavoriteKey(ctrl.StratFile)
+    if (CommunityFavoriteFiles.Has(key))
+        CommunityFavoriteFiles.Delete(key)
+    else
+        CommunityFavoriteFiles[key] := ctrl.StratFile
+    IniWrite(KronoxStrategyFavoritesSerialize(CommunityFavoriteFiles), SettingsFile, "StrategyLibrary", "Favorites")
+    RefreshCommunityFilterStyles()
+    SetTimer(RebuildCommunityStrategyGui, -10)
+}
+
+RefreshCommunityFilterStyles() {
+    global CommunityFilterButtons, CommunityFilter, CommunityFavoriteFiles, LoadedStrats
+    availableFavoriteCount := 0
+    for strat in LoadedStrats {
+        if (CommunityFavoriteFiles.Has(KronoxStrategyFavoriteKey(strat.fileName)))
+            availableFavoriteCount += 1
+    }
+    for ctrl in CommunityFilterButtons {
+        selected := StrLower(ctrl.FilterName) = StrLower(CommunityFilter)
+        ctrl.Text := (ctrl.FilterName = "Favorites") ? "Favorites (" availableFavoriteCount ")" : ctrl.FilterName
+        ctrl.Opt("Background" ThemeColor(selected ? "AccentSubtle" : "Surface"))
+        ctrl.SetFont("s8 w" (selected ? "700" : "600") " c" ThemeColor(selected ? "AccentHover" : "TextSecondary"), "Segoe UI")
+        ctrl.Redraw()
+    }
+}
+
+RebuildCommunityStrategyGui(*) {
+    global CurrentTab
+    BuildCommunityStrategyGui()
+    if (CurrentTab = "Tab1")
+        ShowChildGui()
+}
+
+BuildCommunityStrategyGui() {
+    global MainGui, ChildGui, LoadedStrats, CommunityFilter, CommunityFavoriteFiles, CommunityStrategyCount
+    global FrameW, FrameH, ContentH, CurrentScrollPos, SliderH, SliderBG, CustomSlider, GradientButtons
+
+    try ChildGui.Destroy()
+    GradientButtons := []
+    CurrentScrollPos := 0
+    SliderBG := ""
+    CustomSlider := ""
+
+    ChildGui := Gui("-Caption +E0x20 +Border +Parent" MainGui.Hwnd)
+    ChildGui.BackColor := ThemeColor("App")
+    ChildGui.SetFont("s10 c" ThemeColor("TextPrimary"), "Segoe UI")
+
+    visibleStrats := []
+    for strat in LoadedStrats {
+        if (KronoxStrategyMatchesLibraryFilter(strat.difficulty, strat.fileName, CommunityFilter, CommunityFavoriteFiles))
+            visibleStrats.Push(strat)
+    }
+
+    CommunityStrategyCount.Text := visibleStrats.Length " OF " LoadedStrats.Length
+    StartY := 10
+    CardH := 112
+    CardW := 610
+    Gap := 12
+    ContentH := StartY
+
+    for index, strat in visibleStrats {
+        CurrentY := StartY + ((index - 1) * (CardH + Gap))
+        ContentH := CurrentY + CardH + Gap
+        C1X := 8
+        C1Y := CurrentY
+
+        hFrameBg := CreateFrame(CardW, CardH, 10, "0xFF120B0D", "0xFF43242B", "0xFF2D171C")
+        ChildGui.Add("Picture", "x" C1X " y" C1Y " w" CardW " h" CardH " +BackgroundTrans", "HBITMAP:*" hFrameBg)
+
+        hIconBg := CreateGradientButton(56, 56, 8, "0xFF2A1B1D", "0xFF0E090A", "0xff000000", "0x2343242B", "", "Segoe UI", 10, 1)
+        ChildGui.Add("Picture", "x" (C1X + 10) " y" (C1Y + 29) " w76 h76 +BackgroundTrans", "HBITMAP:*" hIconBg)
+        diffImg := "Resources/Strats/images/" strat.difficulty ".png"
+        if (FileExist(diffImg))
+            ChildGui.Add("Picture", "x" (C1X + 20) " y" (C1Y + 39) " h56 w56 +BackgroundTrans", diffImg)
+
+        ChildGui.Add("Picture", "x" (C1X + 75) " y" (C1Y + 29) " w76 h76 +BackgroundTrans", "HBITMAP:*" hIconBg)
+        coinsCount := 0
+        if RegExMatch(strat.income, "i)([\d,]+)\s*coins", &incomeMatch)
+            coinsCount := Number(StrReplace(incomeMatch[1], ","))
+        if (strat.difficulty = "Hardcore" || strat.difficulty = "Voidcore")
+            rewardIcon := "Resources/Strats/images/GemsMediumPile.png"
+        else if (coinsCount >= 8000)
+            rewardIcon := "Resources/Strats/images/CoinsSmallChest.png"
+        else if (coinsCount >= 6000)
+            rewardIcon := "Resources/Strats/images/CoinsMediumPile.png"
+        else
+            rewardIcon := "Resources/Strats/images/CoinsSmallPile.png"
+        if (FileExist(rewardIcon))
+            ChildGui.Add("Picture", "x" (C1X + 85) " y" (C1Y + 39) " h56 w56 +BackgroundTrans", rewardIcon)
+
+        ChildGui.SetFont("s11 w700 c" ThemeColor("TextPrimary"), "Segoe UI")
+        ChildGui.Add("Text", "x" (C1X + 15) " y" (C1Y + 9) " w430 h22 +BackgroundTrans", strat.title)
+
+        favoriteKey := KronoxStrategyFavoriteKey(strat.fileName)
+        favoriteCtrl := ChildGui.Add("Text", "x" (C1X + 545) " y" (C1Y + 7) " w26 h26 Center +0x200 BackgroundTrans", CommunityFavoriteFiles.Has(favoriteKey) ? "★" : "☆")
+        favoriteCtrl.SetFont("s15 w400 c" ThemeColor(CommunityFavoriteFiles.Has(favoriteKey) ? "AccentHover" : "TextMuted"), "Segoe UI Symbol")
+        favoriteCtrl.StratFile := strat.fileName
+        favoriteCtrl.OnEvent("Click", ToggleCommunityStrategyFavorite)
+
+        ChildGui.SetFont("s9 w700 c" ThemeColor("TextMuted"), "Segoe UI")
+        helpCtrl := ChildGui.Add("Text", "x" (C1X + 580) " y" (C1Y + 10) " w18 h20 Center +BackgroundTrans", "i")
+        helpCtrl.OnEvent("Click", ((t, a, r, m, d) => (*) => StratInfo(t, a, r, m, d))(
+            strat.title, strat.author, strat.towers, (strat.modifiers != "" ? strat.modifiers : "none"), strat.desc))
+
+        if (strat.difficulty = "Hardcore")
+            badgeColor1 := "0xFFB91F24", badgeColor2 := "0xFF7A151B"
+        else if (strat.difficulty = "Molten")
+            badgeColor1 := "0xFFE09334", badgeColor2 := "0xFF8F5413"
+        else if (strat.difficulty = "Frost")
+            badgeColor1 := "0xff34a9e0", badgeColor2 := "0xff17559c"
+        else if (strat.difficulty = "Fallen")
+            badgeColor1 := "0xFF374151", badgeColor2 := "0xFF1F2937"
+        else
+            badgeColor1 := "0xb900ff2a", badgeColor2 := "0xff1a5f39"
+        hgmMode := CreateGradientButton(102, 28, 3, badgeColor1, badgeColor2, "0x40000000", "0x7effffff", strat.difficulty != "" ? strat.difficulty : "Easy", "Segoe UI", 11, 1)
+        ChildGui.Add("Picture", "x" (C1X + 145) " y" (C1Y + 34) " w102 h28 +BackgroundTrans", "HBITMAP:*" hgmMode)
+
+        ChildGui.SetFont("s9 w500 c" ThemeColor("TextSecondary"), "Segoe UI")
+        ChildGui.Add("Text", "x" (C1X + 154) " y" (C1Y + 66) " w105 h18 +BackgroundTrans", "◷ " (strat.time != "" ? strat.time : "Not listed"))
+        ChildGui.Add("Text", "x" (C1X + 154) " y" (C1Y + 84) " w105 h18 +BackgroundTrans", "◈ " (strat.income != "" ? strat.income : "Not listed"))
+
+        ChildGui.SetFont("s7 w700 c" ThemeColor("Accent"), "Segoe UI")
+        ChildGui.Add("Text", "x" (C1X + 270) " y" (C1Y + 31) " w95 h16 +BackgroundTrans", "REQUIRED LOADOUT")
+        ChildGui.SetFont("s9 w400 c" ThemeColor("TextPrimary"), "Segoe UI")
+        ChildGui.Add("Text", "x" (C1X + 270) " y" (C1Y + 47) " w320 h20 +BackgroundTrans", strat.towers != "" ? strat.towers : "No tower requirement")
+
+        hBtnNormal := CreateGradientButton(220, 34, 8, "0xFFB91F24", "0xFF7A151B", "0x40000000", "0x5dffffff", "Load strategy", "Segoe UI", 12, 1)
+        hBtnHover := CreateGradientButton(220, 34, 8, "0xFFFF4545", "0xFFEF2B2D", "0x60000000", "0x5dffffff", "Load strategy", "Segoe UI", 12, 1)
+        picLoadBtn := ChildGui.Add("Picture", "x" (C1X + 365) " y" (C1Y + 70) " w220 h34 +BackgroundTrans", "HBITMAP:*" hBtnNormal)
+        loadCtrl := ChildGui.Add("Text", "x" (C1X + 365) " y" (C1Y + 70) " w220 h34 +BackgroundTrans +0x200 Center", "")
+        loadCtrl.SetFont("cFFFFFF s10 w700", "Segoe UI")
+        loadCtrl.StratFile := strat.fileName
+        loadCtrl.OnEvent("Click", DownloadStrat)
+        loadCtrl.PicControl := picLoadBtn
+        loadCtrl.ImgNormal := hBtnNormal
+        loadCtrl.ImgHover := hBtnHover
+        GradientButtons.Push(loadCtrl)
+    }
+
+    if (visibleStrats.Length = 0) {
+        ChildGui.SetFont("s15 w700 c" ThemeColor("TextPrimary"), "Segoe UI")
+        ChildGui.Add("Text", "x20 y65 w600 h28 +BackgroundTrans Center", CommunityFilter = "Favorites" ? "No favorites yet" : "No strategies in this mode")
+        ChildGui.SetFont("s9 w400 c" ThemeColor("TextMuted"), "Segoe UI")
+        ChildGui.Add("Text", "x40 y101 w560 h44 +BackgroundTrans Center", CommunityFilter = "Favorites" ? "Select the star on any strategy to keep it one click away here." : "Choose another gamemode filter to continue browsing.")
+        ContentH := FrameH
+    }
+
+    if (ContentH > FrameH) {
+        SliderH := Max(30, Round(FrameH * (FrameH / ContentH)))
+        SliderX := FrameW - 9
+        SliderW := 5
+        hSliderBG := CreateScrollThumb(SliderW, FrameH, 3, "0xFF1A1113", "0xFF1A1113", "0x000000")
+        hSlider := CreateScrollThumb(SliderW, SliderH, 3, "0xFFEF2B2D", "0xFFB91F24", "0xFF351215")
+        SliderBG := ChildGui.Add("Picture", "x" SliderX " y0 w" SliderW " h" FrameH " +BackgroundTrans", "HBITMAP:*" hSliderBG)
+        CustomSlider := ChildGui.Add("Picture", "x" SliderX " y0 w" SliderW " h" SliderH " +BackgroundTrans", "HBITMAP:*" hSlider)
+    } else {
+        SliderH := FrameH
+    }
+
+    ApplyDarkControlThemes(ChildGui)
+    ApplyDarkWindowTheme(ChildGui.Hwnd)
 }
 
 ShowChildGui() {
@@ -2795,30 +3081,39 @@ InitializeSettingsScroll() {
 ApplySettingsScroll() {
     global CurrentTab, SettingsScrollableCtrls, SettingsBaseY, SettingsScrollOffset
     global SettingsScrollMax, SettingsViewportTop, SettingsViewportBottom
-    global SettingsScrollTrack, SettingsScrollThumb
+    global SettingsScrollTrack, SettingsScrollThumb, MainGui
 
     if (!IsSet(CurrentTab) || CurrentTab != "Tab5")
         return
 
-    SettingsScrollOffset := Max(0, Min(SettingsScrollOffset, SettingsScrollMax))
-    for ctrl in SettingsScrollableCtrls {
-        try {
-            ctrl.GetPos(, , , &ctrlH)
-            newY := SettingsBaseY[ctrl.Hwnd] - SettingsScrollOffset
-            ctrl.Move(, newY)
-            ctrl.Visible := (newY >= SettingsViewportTop && (newY + ctrlH) <= SettingsViewportBottom)
+    ; Moving dozens of native controls one at a time leaves stale text/edit
+    ; fragments on some Windows renderers. Batch the layout under WM_SETREDRAW,
+    ; then invalidate the parent and all children in one paint pass.
+    DllCall("SendMessage", "Ptr", MainGui.Hwnd, "UInt", 0x000B, "Ptr", 0, "Ptr", 0)
+    try {
+        SettingsScrollOffset := Max(0, Min(SettingsScrollOffset, SettingsScrollMax))
+        for ctrl in SettingsScrollableCtrls {
+            try {
+                ctrl.GetPos(, , , &ctrlH)
+                newY := SettingsBaseY[ctrl.Hwnd] - SettingsScrollOffset
+                ctrl.Move(, newY)
+                ctrl.Visible := (newY >= SettingsViewportTop && (newY + ctrlH) <= SettingsViewportBottom)
+            }
         }
-    }
 
-    viewportHeight := SettingsViewportBottom - SettingsViewportTop
-    contentHeight := viewportHeight + SettingsScrollMax
-    thumbHeight := (contentHeight > 0) ? Max(55, Round(viewportHeight * viewportHeight / contentHeight)) : viewportHeight
-    travel := Max(0, viewportHeight - thumbHeight)
-    thumbY := SettingsViewportTop + ((SettingsScrollMax > 0) ? Round((SettingsScrollOffset / SettingsScrollMax) * travel) : 0)
-    SettingsScrollTrack.Move(, SettingsViewportTop, , viewportHeight)
-    SettingsScrollThumb.Move(, thumbY, , thumbHeight)
-    SettingsScrollTrack.Visible := SettingsScrollMax > 0
-    SettingsScrollThumb.Visible := SettingsScrollMax > 0
+        viewportHeight := SettingsViewportBottom - SettingsViewportTop
+        contentHeight := viewportHeight + SettingsScrollMax
+        thumbHeight := (contentHeight > 0) ? Max(55, Round(viewportHeight * viewportHeight / contentHeight)) : viewportHeight
+        travel := Max(0, viewportHeight - thumbHeight)
+        thumbY := SettingsViewportTop + ((SettingsScrollMax > 0) ? Round((SettingsScrollOffset / SettingsScrollMax) * travel) : 0)
+        SettingsScrollTrack.Move(, SettingsViewportTop, , viewportHeight)
+        SettingsScrollThumb.Move(, thumbY, , thumbHeight)
+        SettingsScrollTrack.Visible := SettingsScrollMax > 0
+        SettingsScrollThumb.Visible := SettingsScrollMax > 0
+    } finally {
+        DllCall("SendMessage", "Ptr", MainGui.Hwnd, "UInt", 0x000B, "Ptr", 1, "Ptr", 0)
+        DllCall("RedrawWindow", "Ptr", MainGui.Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0185)
+    }
 }
 
 SettingsScrollBy(amount) {
@@ -2920,6 +3215,141 @@ PersistTowerXPSettings(config) {
     UpdateTowerXPControlState()
 }
 
+CollectKronoxFeatureSettings() {
+    queueNames := []
+    queueSeen := Map()
+    for rawName in KronoxEvolutionTokens(EvolutionQueueTowersCtrl.Text) {
+        definition := KronoxTowerDefinition(rawName)
+        if (!IsObject(definition)) {
+            if (Trim(rawName) != "") {
+                MsgBox("Unsupported Evolution Queue tower: " Trim(rawName) ".`n`nType Tower Evolution names separated by commas, for example:`nOperator, Juggernaut, Kingpin`n`nUse names listed in the Tower XP tracker.", "Evolution Queue", 0x10)
+                return false
+            }
+            continue
+        }
+        key := StrLower(definition.name)
+        if (!queueSeen.Has(key)) {
+            queueSeen[key] := true
+            queueNames.Push(definition.name)
+        }
+    }
+    if (EvolutionQueueEnabledCtrl.Value = 1 && queueNames.Length = 0) {
+        MsgBox("Evolution Queue is enabled but its queue is empty.", "Evolution Queue", 0x10)
+        return false
+    }
+
+    otherBoostText := Trim(OtherXPBoostCtrl.Text)
+    if (!IsNumber(otherBoostText) || Number(otherBoostText) < 0.1 || Number(otherBoostText) > 10) {
+        MsgBox("Other XP boost must be a number from 0.1 to 10.", "Boost analytics", 0x10)
+        return false
+    }
+
+    numericFields := [
+        {ctrl: TicketBalanceCtrl, name: "Ticket balance"},
+        {ctrl: TicketReserveCtrl, name: "Ticket reserve"},
+        {ctrl: TicketSessionCtrl, name: "Ticket session cap"},
+        {ctrl: ConsumableRunCtrl, name: "Consumable per-run cap"},
+        {ctrl: ConsumableSessionCtrl, name: "Consumable session cap"}
+    ]
+    values := []
+    for field in numericFields {
+        fieldText := Trim(field.ctrl.Text)
+        if (!RegExMatch(fieldText, "^\d+$")) {
+            MsgBox(field.name " must be a non-negative whole number.", "Resource Budget Guard", 0x10)
+            return false
+        }
+        values.Push(Integer(fieldText))
+    }
+    if (values[2] > values[1]) {
+        MsgBox("Ticket reserve cannot be greater than the current ticket balance.", "Resource Budget Guard", 0x10)
+        return false
+    }
+
+    versionOverride := Trim(TDSVersionOverrideCtrl.Text)
+    if (versionOverride != "" && KronoxExtractTDSVersion(versionOverride ~= "i)^v" ? versionOverride : "v" versionOverride) = "") {
+        MsgBox("Version override must look like 2.6.1 or v2.6.1.", "TDS Update Canary", 0x10)
+        return false
+    }
+
+    return {
+        evolutionEnabled: EvolutionQueueEnabledCtrl.Value = 1,
+        evolutionAutoEquip: EvolutionQueueAutoEquipCtrl.Value = 1,
+        evolutionTowers: KronoxJoin(queueNames),
+        profilerEnabled: StrategyProfilerEnabledCtrl.Value = 1,
+        weekendBoost: WeekendXPBoostCtrl.Value = 1,
+        vipBoost: VIPXPBoostCtrl.Value = 1,
+        otherBoost: Round(Number(otherBoostText), 3),
+        timeScaleBudget: TimeScaleBudgetEnabledCtrl.Value = 1,
+        ticketBalance: values[1], ticketReserve: values[2], ticketSession: values[3],
+        consumableBudget: ConsumableBudgetEnabledCtrl.Value = 1,
+        consumableRun: values[4], consumableSession: values[5],
+        canaryEnabled: UpdateCanaryEnabledCtrl.Value = 1,
+        versionOverride: versionOverride,
+        absoluteMode: AbsoluteModeEnabledCtrl.Value = 1
+    }
+}
+
+PersistKronoxFeatureSettings(config, towerXPConfig) {
+    global SettingsFile, StateFile
+    global EvolutionQueueEnabled, EvolutionQueueTowers, EvolutionQueueAutoEquip
+    global StrategyProfilerEnabled, WeekendXPBoostEnabled, VIPXPBoostEnabled, OtherXPBoostMultiplier
+    global TimeScaleBudgetEnabled, TimeScaleTicketBalance, TimeScaleTicketReserve, TimeScaleTicketMaxSession
+    global ConsumableBudgetEnabled, ConsumableMaxPerRun, ConsumableMaxPerSession
+    global UpdateCanaryEnabled, TDSVersionOverride, AbsoluteModeEnabled
+
+    oldQueue := IniRead(SettingsFile, "EvolutionQueue", "Towers", "")
+    oldEnabled := Integer(IniRead(SettingsFile, "EvolutionQueue", "Enabled", 0))
+    EvolutionQueueEnabled := config.evolutionEnabled ? 1 : 0
+    EvolutionQueueTowers := config.evolutionTowers
+    EvolutionQueueAutoEquip := config.evolutionAutoEquip ? 1 : 0
+    StrategyProfilerEnabled := config.profilerEnabled ? 1 : 0
+    WeekendXPBoostEnabled := config.weekendBoost ? 1 : 0
+    VIPXPBoostEnabled := config.vipBoost ? 1 : 0
+    OtherXPBoostMultiplier := config.otherBoost
+    TimeScaleBudgetEnabled := config.timeScaleBudget ? 1 : 0
+    TimeScaleTicketBalance := config.ticketBalance
+    TimeScaleTicketReserve := config.ticketReserve
+    TimeScaleTicketMaxSession := config.ticketSession
+    ConsumableBudgetEnabled := config.consumableBudget ? 1 : 0
+    ConsumableMaxPerRun := config.consumableRun
+    ConsumableMaxPerSession := config.consumableSession
+    UpdateCanaryEnabled := config.canaryEnabled ? 1 : 0
+    TDSVersionOverride := config.versionOverride
+    AbsoluteModeEnabled := config.absoluteMode ? 1 : 0
+
+    IniWrite(EvolutionQueueEnabled, SettingsFile, "EvolutionQueue", "Enabled")
+    IniWrite(EvolutionQueueTowers, SettingsFile, "EvolutionQueue", "Towers")
+    IniWrite(EvolutionQueueAutoEquip, SettingsFile, "EvolutionQueue", "AutoEquip")
+    if (oldQueue != EvolutionQueueTowers || oldEnabled != EvolutionQueueEnabled) {
+        IniWrite("", SettingsFile, "EvolutionQueue", "Assignments")
+        IniWrite(1, StateFile, "State", "EvolutionQueuePendingEquip")
+    }
+    IniWrite(StrategyProfilerEnabled, SettingsFile, "Analytics", "ProfilerEnabled")
+    IniWrite(WeekendXPBoostEnabled, SettingsFile, "Analytics", "WeekendXPBoost")
+    IniWrite(VIPXPBoostEnabled, SettingsFile, "Analytics", "VIPXPBoost")
+    IniWrite(OtherXPBoostMultiplier, SettingsFile, "Analytics", "OtherXPBoost")
+    IniWrite(TimeScaleBudgetEnabled, SettingsFile, "ResourceBudget", "TimeScaleEnabled")
+    IniWrite(TimeScaleTicketBalance, SettingsFile, "ResourceBudget", "TicketBalance")
+    IniWrite(TimeScaleTicketReserve, SettingsFile, "ResourceBudget", "TicketReserve")
+    IniWrite(1, SettingsFile, "ResourceBudget", "TicketCostPerRun")
+    IniWrite(TimeScaleTicketMaxSession, SettingsFile, "ResourceBudget", "TicketMaxPerSession")
+    IniWrite(ConsumableBudgetEnabled, SettingsFile, "ResourceBudget", "ConsumableEnabled")
+    IniWrite(ConsumableMaxPerRun, SettingsFile, "ResourceBudget", "ConsumableMaxPerRun")
+    IniWrite(ConsumableMaxPerSession, SettingsFile, "ResourceBudget", "ConsumableMaxPerSession")
+    IniWrite(UpdateCanaryEnabled, SettingsFile, "UpdateCanary", "Enabled")
+    IniWrite(TDSVersionOverride, SettingsFile, "UpdateCanary", "VersionOverride")
+    IniWrite(AbsoluteModeEnabled, SettingsFile, "Reliability", "AbsoluteMode")
+    IniWrite(300000, SettingsFile, "Reliability", "JoinTimeoutMs")
+    IniWrite(600000, SettingsFile, "Reliability", "IdleTimeoutMs")
+
+    if (EvolutionQueueEnabled) {
+        IniWrite(1, SettingsFile, "TowerXP", "Enabled")
+        for towerName in KronoxEvolutionQueue(SettingsFile)
+            IniWrite(1, SettingsFile, TowerXPSectionName(towerName), "Tracked")
+    }
+    EvolutionQueueStatusCtrl.Text := "  Current slots: " KronoxEvolutionAssignmentText(SettingsFile) "`n  Assignments refresh when the strategy starts; completed level-20 towers advance automatically."
+}
+
 OnMouseWheel(wp, lp, msg, hwnd) {
     global ChildHwnd, ChildGui, CurrentTab, MainGui
     MouseGetPos(, , &maxH, &ctrlH, 2)
@@ -2947,19 +3377,21 @@ OnMouseWheel(wp, lp, msg, hwnd) {
 
 
 OnScroll(wp, lp, msg, hwnd) {
-    global ChildGui, CurrentScrollPos, ContentH, FrameH, SliderH, CustomSlider
+    global ChildGui, CurrentScrollPos, ContentH, FrameH, SliderH, CustomSlider, SliderBG
     ch := ChildGui.Hwnd
     if (hwnd != ch)
         return
     action := wp & 0xFFFF
     if (action = 0) {
-        newPos := CurrentScrollPos - 3
+        newPos := CurrentScrollPos - 12
     } else if (action = 1) {
-        newPos := CurrentScrollPos + 3
+        newPos := CurrentScrollPos + 12
     } else {
         return
     }
     maxScroll := ContentH - FrameH
+    if (maxScroll <= 0)
+        return
     newPos := Max(0, Min(newPos, maxScroll))
     if (newPos != CurrentScrollPos) {
         DllCall("ScrollWindow", "Ptr", hwnd, "Int", 0, "Int", CurrentScrollPos - newPos, "Ptr", 0, "Ptr", 0)
@@ -2969,7 +3401,12 @@ OnScroll(wp, lp, msg, hwnd) {
 
         sliderVisualY := Round((newPos / maxScroll) * availableTrackSpace)
         
-        CustomSlider.Move(, sliderVisualY)
+        ; ScrollWindow moves every child, including the decorative scrollbar.
+        ; Offset both scrollbar pieces by the content position so they remain fixed in the viewport.
+        if (IsObject(SliderBG))
+            SliderBG.Move(, newPos)
+        if (IsObject(CustomSlider))
+            CustomSlider.Move(, newPos + sliderVisualY)
         
         DllCall("UpdateWindow", "Ptr", hwnd)
     }
@@ -4097,6 +4534,7 @@ StartStrategy(ctrl, *) {
     if (RunningStrategy or Recording) {
         return
     }
+    ResumeAutomationInput("strategy-start")
     g_IsFirstLaunch := Integer(IniRead(StateFile, "State", "IsFirstLaunch", 1))
 
     global RunningStrategy, CurrentRotationIndex, gamemap, difficulty, requiredTowers, modifiers
@@ -4167,6 +4605,21 @@ StartStrategy(ctrl, *) {
 
     LoadStrategyFile(stratFile)
 
+    evolutionRun := PrepareEvolutionQueueForRun()
+    if (evolutionRun.enabled) {
+        if (v.RotateStrategies = 1) {
+            ModernMsgBox("Evolution Queue", "Evolution Queue currently requires one fixed Abstract strategy. Turn Strategy Rotation off before starting.", "OK", "WARNING")
+            return
+        }
+        if (!evolutionRun.valid) {
+            message := evolutionRun.complete ? "Every tower in the Evolution Queue is already level 20." : evolutionRun.message
+            ModernMsgBox("Evolution Queue", message, "OK", evolutionRun.complete ? "INFO" : "WARNING")
+            return
+        }
+        if (KronoxFeatureBool(IniRead(SettingsFile, "EvolutionQueue", "AutoEquip", 1)))
+            IniWrite(1, StateFile, "State", "EvolutionQueuePendingEquip")
+    }
+
     if (requiredTowers != "") {
         requiredMessage := requiredTowers
         if (AbstractTowerSlots.Length > 0) {
@@ -4175,7 +4628,10 @@ StartStrategy(ctrl, *) {
             requiredMessage .= "`nEquip the towers you want to level in hotbar slots " abstractSlotText "."
             if (AbstractPlacementLimit < AbstractTowerSlots.Length)
                 requiredMessage .= "`nThe remaining configured abstract slots are disabled and may be left empty."
-            requiredMessage .= "`nAuto Equip is skipped for this strategy so those towers are never removed."
+            if (evolutionRun.enabled)
+                requiredMessage .= "`n`nEVOLUTION QUEUE: " KronoxEvolutionAssignmentText(SettingsFile) "`nEffective loadout: " evolutionRun.text
+            else
+                requiredMessage .= "`nAuto Equip is skipped for this strategy so those towers are never removed."
         }
         ModernMsgBox("Required Towers", requiredMessage, "OK")
     }
@@ -4209,6 +4665,7 @@ StartStrategy(ctrl, *) {
     IniWrite(A_TickCount, StateFile, "State", "CurrentStratStartTime")
     CurrentRunCount := 0
     IniWrite(0, StateFile, "State", "CurrentRunCount")
+    KronoxBudgetResetSession(StateFile)
 
     RunStrategy("", true, AutoEquip)
 }
@@ -4216,6 +4673,7 @@ StartStrategy(ctrl, *) {
 StopStrategy(ctrl, *) {
     global RunningStrategy, AutorunStartTime, Recording, MacroRecording, InputHookObj
 
+    SuspendAutomationInput("manual-stop")
     KillSubmacros()
 
     if (RunningStrategy) {
@@ -4998,6 +5456,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
 
         if (ImageSearch(&fx,&fy,x1,y1,x2,y2, "*Trans000000 *50 " A_WorkingDir "/Resources/hologram_tower_cooldown.png") || ReadMessage(["hologram", "ability", "is on", "cooldown", "hol%ram%", "ility"])) {
             LogToConsole("Failed to clone " towerId "! (hologram cooldown) Retrying again in 5 seconds...")
+            KronoxProfilerRetry("CloneTower " towerId, "hologram cooldown")
             if (maxAttempts > 0 && attempts >= maxAttempts) {
                 LogToConsole("Clone " towerId " reached its " maxAttempts "-attempt limit; deferring this step.", true)
                 canUseAbility := true
@@ -5015,6 +5474,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
 
         if (ImageSearch(&fx,&fy,x1,y1,x2,y2, "*Trans000000 *50 " A_WorkingDir "/Resources/no_cash_cloning.png") || ReadMessage(["don't", "have", "enough", "cash", "clone", "this"])) {
             LogToConsole("Failed to clone " towerId "! (no cash) Retrying again in 5 seconds...")
+            KronoxProfilerRetry("CloneTower " towerId, "not enough cash")
             if (maxAttempts > 0 && attempts >= maxAttempts) {
                 LogToConsole("Clone " towerId " reached its " maxAttempts "-attempt limit; deferring this step.", true)
                 canUseAbility := true
@@ -5029,6 +5489,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
         openedUI := waitForTowerUI(,,500)
         if (openedUI) {
             LogToConsole("Failed to clone tower: accidentally opened upgrade ui! Retrying again..")
+            KronoxProfilerRetry("CloneTower " towerId, "upgrade UI opened")
             Click(ScaleX(unfocusX), ScaleY(unfocusY))
             if (maxAttempts > 0 && attempts >= maxAttempts) {
                 LogToConsole("Clone " towerId " reached its " maxAttempts "-attempt limit; deferring this step.", true)
@@ -5054,6 +5515,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
 
         if (ImageSearch(&fx,&fy,x1,y1,x2,y2, "*Trans000000 *50 " A_WorkingDir "/Resources/stunned.png") || ReadMessage(["error", "that", "cannot", "cann", "activated", "while", "stunned"],,["need", "more", "to"],"\$|\d")) {
             LogToConsole("Failed to clone " towerId "! (hacker is stunned) Retrying again in 5 seconds...")
+            KronoxProfilerRetry("CloneTower " towerId, "hacker stunned")
             if (maxAttempts > 0 && attempts >= maxAttempts) {
                 LogToConsole("Clone " towerId " reached its " maxAttempts "-attempt limit; deferring this step.", true)
                 canUseAbility := true
@@ -5067,6 +5529,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
 
         if (ImageSearch(&fx,&fy,x1,y1,x2,y2, "*Trans000000 *50 " A_WorkingDir "/Resources/cannot_place_here.png") || ReadMessage(["cannot", "here", "hereg", "herd", "her", "here!", "cann", "cannd", "he", "h", "hed"],,["need", "more", "to"],"\$|\d")) {
             LogToConsole("Failed to clone " towerId "! (cannot place here!) Retrying again in 5 seconds...")
+            KronoxProfilerRetry("CloneTower " towerId, "cannot place here")
             if (maxAttempts > 0 && attempts >= maxAttempts) {
                 LogToConsole("Clone " towerId " reached its " maxAttempts "-attempt limit; deferring this step.", true)
                 canUseAbility := true
@@ -5468,6 +5931,16 @@ SaveAllSettings(ctrl, *) {
     towerXPConfig := CollectTowerXPSettings()
     if (!IsObject(towerXPConfig))
         return
+    featureConfig := CollectKronoxFeatureSettings()
+    if (!IsObject(featureConfig))
+        return
+    if (featureConfig.evolutionEnabled) {
+        towerXPConfig.enabled := true
+        for entry in towerXPConfig.entries {
+            if (KronoxArrayContains(StrSplit(featureConfig.evolutionTowers, ","), entry.definition.name))
+                entry.tracked := true
+        }
+    }
 
     tempChainKey := SubStr(RegExReplace(ChainKeyCtrl.Value, "\s", ""), 1, 1)
     tempBeatKey := SubStr(RegExReplace(BeatKeyCtrl.Value, "\s", ""), 1, 1)
@@ -5615,6 +6088,7 @@ SaveAllSettings(ctrl, *) {
     IniWrite(HoloKey, SettingsFile, "RecordingHotkeys", "HoloKey")
 
     PersistTowerXPSettings(towerXPConfig)
+    PersistKronoxFeatureSettings(featureConfig, towerXPConfig)
 
     if (TimeScaleMode = "1.5x") {
         UseTimeScale := true
@@ -5913,13 +6387,74 @@ LoadStrategyFile(file) {
     }
 }
 
+PrepareEvolutionQueueForRun() {
+    global SettingsFile, StateFile, requiredTowers, AbstractTowerSlots
+
+    result := {enabled: false, valid: false, pending: false, complete: false, text: "", message: ""}
+    if (!KronoxFeatureBool(IniRead(SettingsFile, "EvolutionQueue", "Enabled", 0)))
+        return result
+    result.enabled := true
+    activeSlots := ActiveAbstractTowerSlots()
+    if (activeSlots.Length = 0) {
+        result.message := "Evolution Queue requires a strategy with at least one active Abstract slot."
+        return result
+    }
+    loadout := KronoxEvolutionBuildLoadout(requiredTowers, activeSlots, SettingsFile, StateFile)
+    result.complete := loadout.prepared.complete
+    result.valid := loadout.valid
+    result.text := loadout.text
+    result.message := loadout.message
+    result.pending := loadout.prepared.changed || KronoxFeatureBool(IniRead(StateFile, "State", "EvolutionQueuePendingEquip", 0))
+    return result
+}
+
+DetectTDSVersion() {
+    global SettingsFile
+    versionOverride := Trim(IniRead(SettingsFile, "UpdateCanary", "VersionOverride", ""))
+    if (versionOverride != "")
+        return KronoxExtractTDSVersion(versionOverride ~= "i)^v" ? versionOverride : "v" versionOverride)
+
+    hwnd := GetRobloxHWND()
+    if (!hwnd)
+        return ""
+    getRobloxPos(,, &w, &h, hwnd)
+    if (w < 300 || h < 200)
+        return ""
+    regionX := Round(w * 0.72)
+    regionY := Round(h * 0.82)
+    regionW := Max(120, w - regionX)
+    regionH := Max(80, h - regionY)
+    try {
+        hBitmap := OCR.CreateHBitmap(regionX, regionY, regionW, regionH,
+            {hWnd: hwnd, onlyClientArea: 1, mode: 2}, 3)
+        text := OCR.FromBitmap(hBitmap, {lang: "en-US", grayscale: true}).Text
+        return KronoxExtractTDSVersion(text)
+    } catch Error as err {
+        WriteRuntimeLog("CANARY", "TDS version OCR failed: " err.Message, "WARN")
+        return ""
+    }
+}
+
+PrepareUpdateCanary() {
+    global SettingsFile, StateFile
+    strategyPath := IniRead(StateFile, "State", "Strategy", "")
+    fingerprint := GetStrategyFingerprint(strategyPath)
+    version := DetectTDSVersion()
+    canary := KronoxCanaryPrepare(SettingsFile, StateFile, fingerprint, version)
+    if (canary.message != "")
+        LogToConsole("Update canary: " canary.message, canary.active, false)
+    if (canary.changed)
+        SendToWebhookInstant("TDS UPDATE CANARY`n" canary.message "`nThe first run will stop on a loss or watchdog recovery.", 15150117, false)
+    return canary
+}
+
 RunStrategy(stratFile := "", skipRestart := false, equip := false) {
     global RunningStrategy, difficulty, MoveEnabled, MoveDirection, MoveDuration
     global unfocusX, unfocusY, UseTimeScale, TimeScaleMultiplier, TimeScaleMode
     global SettingsFile, requiredTowers, modifiers, LastOpenedTowerID
     global LastSkipCheck, SKIP_CHECK_INTERVAL, AutorunStartTime, StateFile
     global WebhookEnabled, CurrentStratStartTime, CurrentRunCount, gamemap, AbstractTowerSlots, AbstractTowerSlot
-    global StrategyHotbarRemapSummary
+    global StrategyHotbarRemapSummary, EvolutionQueueAutoEquip
 
     if (RunningStrategy != true)
         return
@@ -5993,13 +6528,30 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
     }
 
     if (!switched) {
-        if (!skipRestart) {
+        evolutionRun := PrepareEvolutionQueueForRun()
+        if (evolutionRun.enabled && !evolutionRun.valid && !evolutionRun.complete) {
+            LogToConsole("Evolution Queue stopped: " evolutionRun.message, true, false)
+            IniWrite(0, StateFile, "State", "Running")
+            return
+        }
+        shouldEquipEvolution := evolutionRun.enabled && evolutionRun.valid
+            && KronoxFeatureBool(IniRead(SettingsFile, "EvolutionQueue", "AutoEquip", EvolutionQueueAutoEquip))
+            && evolutionRun.pending
+
+        if (shouldEquipEvolution) {
+            LogToConsole("Evolution Queue equipping: " evolutionRun.text, true, false)
+            CloseRoblox()
+            RunRoblox()
+            EquipTowers(evolutionRun.text, true)
+            IniWrite(0, StateFile, "State", "EvolutionQueuePendingEquip")
+            JoinGame()
+        } else if (!skipRestart) {
             CheckRestart()
         } else {
             CloseRoblox()
             RunRoblox()
-            if (equip) {
-                EquipTowers(RequiredTowers)
+            if (equip || shouldEquipEvolution) {
+                EquipTowers(shouldEquipEvolution ? evolutionRun.text : RequiredTowers, shouldEquipEvolution)
             }
             JoinGame()
         }
@@ -6014,6 +6566,8 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
     if (readyX = 0 && readyY = 0) {
         waitReady()
     }
+
+    PrepareUpdateCanary()
 
     if (!IsRestarting) {
         if (!InArray(SpecialMaps, gamemap)) {
@@ -6030,11 +6584,12 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
 }
 
 PlayStrategy() {
-    global canUseAbility, MultiplayerEnabled, StateFile
+    global canUseAbility, MultiplayerEnabled, StateFile, gamemap, InputAutomationSuspended
     global CloneFailurePolicy, EngineerCloneMaxAttempts
     global AutoSkipSuccessfulCount, AutoSkipLastDetectedWave, AutoSkipBlockLogged, AdvancedLastSkippedWave
 
-    BeginTrackedRun()
+    activeRunId := BeginTrackedRun()
+    ResumeAutomationInput("strategy-playback")
     SetMacroPhase("strategy-playback", "recorded-steps", 0)
     IniWrite(A_TickCount, StateFile, "State", "TimeWhenStartedPlaying")
     AutoSkipSuccessfulCount := 0
@@ -6052,7 +6607,10 @@ PlayStrategy() {
     i := 1
     while (i <= executionSteps.Length) {
         step := executionSteps[i]
+        TouchMacroProgress("step " i "/" executionSteps.Length)
         isMacroStep := RegExMatch(step, "i)^(Click|Send|Sleep)\s*\(")
+        profileIndex := i
+        profileStart := KronoxProfilerStepStart(profileIndex, step)
 
         if (useDeferredCloneQueue && RegExMatch(step, "i)^CloneTower\s*\(\s*([^,]+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)$", &cloneMatch)) {
             cloneTowerId := Trim(cloneMatch[1])
@@ -6064,18 +6622,28 @@ PlayStrategy() {
                 cloneSucceeded := CloneTower(cloneTowerId, cloneX, cloneY, cloneWait, EngineerCloneMaxAttempts)
                 if (!cloneSucceeded) {
                     executionSteps.Push(step)
+                    KronoxProfilerRetry(step, "Engineer clone deferred after " EngineerCloneMaxAttempts " attempts")
                     LogToConsole("Deferred Engineer clone moved to the back of the strategy queue: " step, true)
                 }
+                KronoxProfilerStepEnd(profileIndex, step, profileStart, cloneSucceeded ? "OK" : "DEFERRED")
             } else if RegExMatch(cloneTowerId, "i)^Juggernaut") {
                 Loop {
                     if CloneTower(cloneTowerId, cloneX, cloneY, cloneWait, 0) {
                         break
                     }
+                    KronoxProfilerRetry(step, "Required Juggernaut clone retry")
                     LogToConsole("Required Juggernaut clone did not complete; retrying in 5 seconds...", true)
                     Sleep(5000)
                 }
+                KronoxProfilerStepEnd(profileIndex, step, profileStart)
             } else {
-                ExecuteStep(step)
+                try {
+                    ExecuteStep(step)
+                    KronoxProfilerStepEnd(profileIndex, step, profileStart)
+                } catch Error as err {
+                    KronoxProfilerStepEnd(profileIndex, step, profileStart, "ERROR", err.Message)
+                    LogToConsole("ERROR executing step " profileIndex ": " step " '" err.Message "' ")
+                }
             }
 
             i++
@@ -6100,17 +6668,28 @@ PlayStrategy() {
             }
 
             success := UpgradeTower(currentID, false, countUpgrades, currentPath, currentpathLevel)
+            KronoxProfilerStepEnd(profileIndex, step, profileStart, success ? "OK" : "FAILED",
+                "Grouped upgrades: " countUpgrades)
             i := success ? lookAhead : i + 1
         } else if RegExMatch(step, "i)SetDJTrack\s*\(\s*([^\s,)]+)\s*\)", &t) {
             SetDJTrack(t[1])
+            KronoxProfilerStepEnd(profileIndex, step, profileStart)
             i++
         } else if RegExMatch(step, "i)SpawnTower\s*\(.*\)") {
-            ExecuteStep(step)
+            try {
+                ExecuteStep(step)
+                KronoxProfilerStepEnd(profileIndex, step, profileStart)
+            } catch Error as err {
+                KronoxProfilerStepEnd(profileIndex, step, profileStart, "ERROR", err.Message)
+                LogToConsole("ERROR executing step " profileIndex ": " step " '" err.Message "' ")
+            }
             i++
         } else {
             try {
                 ExecuteStep(step)
+                KronoxProfilerStepEnd(profileIndex, step, profileStart)
             } catch Error as e { 
+                KronoxProfilerStepEnd(profileIndex, step, profileStart, "ERROR", e.Message)
                 LogToConsole("ERROR executing step " . i . ": " . step . " '" . e.Message . "' ")
             }
             i++
@@ -6119,7 +6698,10 @@ PlayStrategy() {
 
     Click(ScaleX(unfocusX), ScaleY(unfocusY))
     LogToConsole("All strategy steps completed, entering maintenance loop...")
+    SetMacroPhase("strategy-maintenance", gamemap, 0)
     Loop {
+        if (InputAutomationSuspended)
+            return
         canUseAbility := true
         LastOpenedTowerID := ""
         Sleep 2000
@@ -6185,6 +6767,10 @@ ExecuteStep(step) {
         Sleep(Integer(m[1]))
         return
     }
+    if RegExMatch(step, 'i)^UseConsumable\s*\(\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*"([^"]+)")?\s*\)$', &m) {
+        UseBudgetedConsumable(Integer(m[1]), Integer(m[2]), m[3] != "" ? m[3] : "Consumable")
+        return
+    }
     if RegExMatch(step, "i)Commander\s*:=\s*true") {
         Commander := true
         return
@@ -6193,6 +6779,21 @@ ExecuteStep(step) {
         SellTower(Trim(m[1]))
         return
     }
+}
+
+UseBudgetedConsumable(x, y, name := "Consumable") {
+    global SettingsFile, StateFile
+    budget := KronoxBudgetCheckConsumable(SettingsFile, StateFile, 1)
+    if (!budget.allowed) {
+        LogToConsole("Consumable budget guard skipped " name ": " budget.reason ".", true, false)
+        return false
+    }
+    ActivateRoblox()
+    Click(sX(x, StrategyWidth), sY(y, StrategyHeight))
+    if (!KronoxBudgetRecordConsumable(SettingsFile, StateFile, 1))
+        return false
+    LogToConsole("Used budgeted consumable: " name ".")
+    return true
 }
 
 LowerGraphics() {
@@ -6205,10 +6806,10 @@ LowerGraphics() {
     SendEvent("{SC02A up}")
 }
 
-EquipTowers(towers) {
+EquipTowers(towers, allowAbstractQueue := false) {
     global AbstractTowerSlots, AbstractTowerSlot
 
-    if (AbstractTowerSlots.Length > 0) {
+    if (AbstractTowerSlots.Length > 0 && !allowAbstractQueue) {
         LogToConsole("Auto Equip skipped: abstract hotbar slots " AbstractTowerSlotsToText(AbstractTowerSlots) " must keep the player's chosen XP towers equipped.", true, false)
         return true
     }
@@ -7108,6 +7709,9 @@ CreateParty(x, y) {
 }
 
 CancelInviteIfAppeared(*) {
+    global InputAutomationSuspended
+    if (InputAutomationSuspended)
+        return
     getRobloxPos(,,&w,&h)
 
     cancel_btn := AdvImageSearch("Resources/cancel_invite.png", Round(w * 0.2), Round(h * 0.2), Round(w * 0.6), Round(h * 0.65))
@@ -7208,7 +7812,10 @@ AcceptInvite(x, y) {
 }
 
 checkCondition(*) {
-    global LeaveCondition, PartyMembers
+    global LeaveCondition, PartyMembers, InputAutomationSuspended
+
+    if (InputAutomationSuspended)
+        return
 
     totalPartyMembers := 0
     Loop Parse, PartyMembers, "," {
@@ -7708,8 +8315,16 @@ waitReady() {
 }
 
 activateTimescale() {
-    global UseTimeScale, TimeScaleMode, TimeScaleMultiplier, difficulty, SettingsFile, AutorunStartTime, MultiplayerEnabled, TimescaleActive
+    global UseTimeScale, TimeScaleMode, TimeScaleMultiplier, difficulty, SettingsFile, StateFile, AutorunStartTime, MultiplayerEnabled, TimescaleActive
     if (MultiplayerEnabled) {
+        return
+    }
+
+    budget := KronoxBudgetCheckTimeScale(SettingsFile, StateFile)
+    if (UseTimeScale && !budget.allowed) {
+        TimescaleActive := false
+        LogToConsole("Timescale budget guard: using 1x because " budget.reason ".", true, false)
+        SendToWebhookInstant("Timescale budget guard used 1x: " budget.reason ".", 15114812, false)
         return
     }
 
@@ -7754,6 +8369,7 @@ activateTimescale() {
             LogToConsole("-1 Timescale ticket. Total Timescale Tickets Used: " timescales)
             SendToWebhookInstant("[" runtime := FormatRuntime(AutorunStartTime) "] -1 Timescale ticket. `n-# Total Timescale Tickets Used: " . timescales, 12370112, false)
             IniWrite(timescales, StateFile, "State", "Timescale")
+            KronoxBudgetRecordTimeScale(SettingsFile, StateFile, 1)
             TimescaleActive := true
 
             Sleep(250)
@@ -7926,6 +8542,7 @@ SpawnTower(X, Y, slotNumber, towerID) {
             LastOpenedTowerID := towerID
             break
         } else {
+            KronoxProfilerRetry("SpawnTower " towerID, "placement attempt " placeAttempts " failed")
             if (!isAbstractPlacement || placeAttempts <= 3 || Mod(placeAttempts, 10) = 0)
                 LogToConsole("Tower " towerID " placement failed, retrying" (isAbstractPlacement ? " while waiting for enough cash" : "") "...")
             if (placeAttempts = 1) {
@@ -8256,7 +8873,11 @@ TryReconnect() {
 }
 
 CheckPopups(*) {
+    global InputAutomationSuspended
     static clickedNotNow := false
+
+    if (InputAutomationSuspended)
+        return
 
     getRobloxPos(,,&w,&h)
 
@@ -8287,10 +8908,21 @@ UseAbilities(*) {
     global AutoSkipSuccessfulCount
     global autoChain, autoCaravan, autoDropTheBeat, Commander, unfocusX, unfocusY, canUseAbility
     global LastOpenedTowerID, Towers, TimescaleActive, needtocheckTowerUI
+    global InputAutomationSuspended, AbsoluteModeEnabled
     static LastChainTime := 0, LastDropTime := 0, LastCaravanTime := 0
+    static LastProgressProbe := 0, LastObservedWave := 0
 
-    if (!canUseAbility) {
+    if (InputAutomationSuspended || !canUseAbility) {
         return
+    }
+
+    if (AbsoluteModeEnabled && A_TickCount - LastProgressProbe >= 15000) {
+        LastProgressProbe := A_TickCount
+        observedWave := DetectCurrentWaveNumber()
+        if (observedWave > 0 && observedWave != LastObservedWave) {
+            LastObservedWave := observedWave
+            TouchMacroProgress("wave " observedWave)
+        }
     }
 
     multiplier := 1
@@ -8320,6 +8952,7 @@ UseAbilities(*) {
                 MouseMove(cx, cy)
                 Sleep(20)
                 LogToConsole("skipped wave")
+                TouchMacroProgress("wave skipped")
             }
         }
     }
@@ -8335,6 +8968,7 @@ UseAbilities(*) {
         LastChainTime := A_TickCount
         SendEvent("{" ChainKey "}")
         LogToConsole("Activated Call of Arms")
+        TouchMacroProgress("Call of Arms")
         canUseAbility := true
         if (LastOpenedTowerID != "") {
             Click(Towers[LastOpenedTowerID].x, Towers[LastOpenedTowerID].y)
@@ -8369,6 +9003,7 @@ UseAbilities(*) {
         LastCaravanTime := A_TickCount
         SendEvent("{" CaravanKey "}")
         LogToConsole("Activated Support Caravan")
+        TouchMacroProgress("Support Caravan")
         if (LastOpenedTowerID != "") {
             Click(Towers[LastOpenedTowerID].x, Towers[LastOpenedTowerID].y)
             Sleep 400
@@ -8389,6 +9024,8 @@ UseAbilities(*) {
         }
 
         Loop {
+            if (InputAutomationSuspended)
+                return
             LastDropTime := A_TickCount
             SendEvent("{" BeatKey "}")
 
@@ -8403,6 +9040,7 @@ UseAbilities(*) {
                 Sleep 4400
             } else {    
                 LogToConsole("Successfully used Drop the Beat")
+                TouchMacroProgress("Drop the Beat")
                 break
             }
         }
@@ -8832,6 +9470,44 @@ GetTowerXPOverlayLine() {
     return line
 }
 
+GetKronoxFeatureOverlayLine() {
+    global SettingsFile, StateFile
+
+    parts := []
+    if (KronoxFeatureBool(IniRead(SettingsFile, "Reliability", "AbsoluteMode", 0)))
+        parts.Push("ABSOLUTE")
+    if (KronoxFeatureBool(IniRead(SettingsFile, "EvolutionQueue", "Enabled", 0))) {
+        assignment := KronoxEvolutionAssignmentText(SettingsFile)
+        if (assignment != "Waiting for an Abstract strategy")
+            parts.Push("Queue " assignment)
+        else
+            parts.Push("Queue waiting")
+    }
+
+    boostFactor := Number(IniRead(StateFile, "State", "ActiveXPBoostFactor", 1))
+    boostProfile := IniRead(StateFile, "State", "ActiveXPBoostProfile", "")
+    if (boostProfile != "" && boostFactor > 1)
+        parts.Push("XP " boostFactor "x")
+
+    if (KronoxFeatureBool(IniRead(SettingsFile, "ResourceBudget", "TimeScaleEnabled", 0))) {
+        used := Max(0, Integer(IniRead(StateFile, "State", "BudgetTimescaleUsed", 0)))
+        balance := Max(0, Integer(IniRead(SettingsFile, "ResourceBudget", "TicketBalance", 0)))
+        parts.Push("TS " used " used / " balance " left")
+    }
+
+    if (KronoxFeatureBool(IniRead(SettingsFile, "ResourceBudget", "ConsumableEnabled", 0))) {
+        runUsed := Max(0, Integer(IniRead(StateFile, "State", "BudgetConsumablesRun", 0)))
+        sessionUsed := Max(0, Integer(IniRead(StateFile, "State", "BudgetConsumablesSession", 0)))
+        parts.Push("Items " runUsed " run / " sessionUsed " session")
+    }
+
+    if (KronoxFeatureBool(IniRead(StateFile, "State", "CanaryActive", 0)))
+        parts.Push("CANARY")
+    if (parts.Length = 0)
+        return ""
+    return "Automation  " KronoxJoin(parts, " | ")
+}
+
 UpdateOverlay() {
     global OverlayBitmap, OverlayGraphics, OverlayPicHWND, LogLines, OverlayWidth, OverlayHeight
     global StateFile, AutorunStartTime
@@ -8882,6 +9558,9 @@ UpdateOverlay() {
     towerXPLine := GetTowerXPOverlayLine()
     if (towerXPLine != "")
         statsText .= "`n" towerXPLine
+    automationLine := GetKronoxFeatureOverlayLine()
+    if (automationLine != "")
+        statsText .= "`n" automationLine
 
     hFamilyOverlay := Gdip_FontFamilyCreate(fontName)
     hFontOverlay   := Gdip_FontCreate(hFamilyOverlay, fontSize, style)
@@ -8919,7 +9598,7 @@ UpdateOverlay() {
         return
     }
 
-    statsLineCount := 3 + (towerXPLine != "" ? 1 : 0)
+    statsLineCount := 3 + (towerXPLine != "" ? 1 : 0) + (automationLine != "" ? 1 : 0)
     statsHeight := Round(fontSize * (statsLineCount + 1.45))
     Gdip_FillRectangle(OverlayGraphics, pBrushStatsBg, 5, 3, OverlayWidth - 10, statsHeight)
     Gdip_FillRectangle(OverlayGraphics, pBrushStatsAccent, 5, 3, 4, statsHeight)
@@ -9008,6 +9687,7 @@ SetMacroPhase(phase, detail := "", timeoutMs := 0) {
     IniWrite(detail, StateFile, "Health", "Detail")
     IniWrite(nowTick, StateFile, "Health", "PhaseStartedTick")
     IniWrite(nowTick, StateFile, "Health", "HeartbeatTick")
+    IniWrite(nowTick, StateFile, "Health", "ProgressTick")
     IniWrite(Max(0, Integer(timeoutMs)), StateFile, "Health", "TimeoutMs")
     IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "Health", "UpdatedAt")
 
@@ -9024,17 +9704,72 @@ TouchMacroHeartbeat(detail := "") {
         IniWrite(detail, StateFile, "Health", "Detail")
 }
 
+TouchMacroProgress(detail := "") {
+    global StateFile
+
+    nowTick := A_TickCount
+    IniWrite(nowTick, StateFile, "Health", "HeartbeatTick")
+    IniWrite(nowTick, StateFile, "Health", "ProgressTick")
+    IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "Health", "UpdatedAt")
+    if (detail != "")
+        IniWrite(detail, StateFile, "Health", "ProgressDetail")
+}
+
+ReleaseAutomationInputs() {
+    global KeyDownTimes
+
+    ; Release both the known movement/interaction keys and any ordinary key a
+    ; recorded Send(... down) step could have left latched. Key-up events do
+    ; not invoke Roblox actions, but immediately stop movement and mouse drags.
+    keys := ["LButton", "RButton", "MButton", "Shift", "LShift", "RShift", "Ctrl", "LCtrl", "RCtrl",
+        "Alt", "LAlt", "RAlt", "Space", "Left", "Right", "Up", "Down", "Tab", "Enter", "Escape"]
+    Loop 26
+        keys.Push(Chr(96 + A_Index))
+    Loop 10
+        keys.Push(String(Mod(A_Index, 10)))
+    for keyName in keys {
+        try SendEvent("{" keyName " up}")
+    }
+    try KeyDownTimes.Clear()
+}
+
+SuspendAutomationInput(reason := "") {
+    global InputAutomationSuspended, canUseAbility
+
+    InputAutomationSuspended := true
+    canUseAbility := false
+    for timerCallback in [UseAbilities, checkCondition, CheckPopups, CancelInviteIfAppeared] {
+        try SetTimer(timerCallback, 0)
+    }
+    ReleaseAutomationInputs()
+    if (reason != "")
+        WriteRuntimeLog("INPUT", "Automation input suspended: " reason ".", "WARN")
+}
+
+ResumeAutomationInput(reason := "") {
+    global InputAutomationSuspended, canUseAbility
+
+    InputAutomationSuspended := false
+    canUseAbility := true
+    if (reason != "")
+        WriteRuntimeLog("INPUT", "Automation input enabled: " reason ".")
+}
+
 HandleRuntimeError(err, mode) {
+    global RunningStrategy
     message := "Unhandled error"
     try message := err.Message
     location := ""
     try location := err.File (err.Line ? ":" err.Line : "")
     detail := message (location != "" ? " at " location : "") " [mode " mode "]"
     try WriteRuntimeLog("MAIN", detail, "ERROR")
-    ; Keep the normal AutoHotkey error dialog, but let the independent watchdog
-    ; recover an unattended run if the failed thread leaves the process alive.
+    ; A failed worker thread used to leave ability/click timers alive while a
+    ; modal AHK error dialog blocked the main flow. Stop all input immediately;
+    ; the watchdog then owns the restart.
+    if (RunningStrategy)
+        try SuspendAutomationInput("fatal-error")
     try SetMacroPhase("fatal-error", detail, 15000)
-    return false
+    return RunningStrategy
 }
 
 LogToConsole(text, SendWebhookInstantly := false, flush := true) {
@@ -9492,6 +10227,7 @@ SafeReload(reason := "automatic-recovery") {
     }
     RestartLock := true
     WriteRuntimeLog("MAIN", "Safe reload requested: " reason, "WARN")
+    SuspendAutomationInput("reload:" reason)
     SetMacroPhase("reloading", reason, 0)
     KillSubmacros()
     if (OverlayHWND) {
@@ -9561,7 +10297,9 @@ KillSubmacros() {
 }
 
 HandleExit(ExitReason, ExitCode) {
-    global StateFile, SettingsFile
+    global StateFile, SettingsFile, RunningStrategy
+
+    try SuspendAutomationInput("process-exit:" ExitReason)
 
     if (RunningStrategy) {
         KillSubmacros()
