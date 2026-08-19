@@ -9,7 +9,7 @@
 ;
 ; Discord Server - https://discord.gg/DQnc2JDJtr
 
-#Requires AutoHotkey v2.0
+#Requires AutoHotkey v2.0.19+
 #SingleInstance Force
 
 SetWorkingDir(A_ScriptDir)
@@ -43,7 +43,7 @@ if (A_PtrSize == 4) {
 #Include "%A_ScriptDir%\lib\KronoxFeatures.ahk"
 #Include "%A_ScriptDir%\submacros\updater.ahk"
 
-ver := "1.3.2a-kronox.7"
+ver := "1.3.2a-kronox.8"
 ; Kronox's Edition checks only its own releases and never falls back to upstream builds.
 global ForkUpdateRepository := "kronoxhellstorm/tds-macro-kronox"
 
@@ -180,6 +180,7 @@ if !DirExist(RuntimeLogDir)
 
 OnError(HandleRuntimeError)
 WriteRuntimeLog("MAIN", "Macro process started (PID " DllCall("GetCurrentProcessId") ").")
+global CurrentMacroPhase := "idle"
 SetMacroPhase("idle", "macro-ui-ready", 0)
 
 ;INI READS
@@ -236,7 +237,7 @@ global KeyDelay := IniRead(SettingsFile, "Options", "KeyDelay", "20")
 
 global PlaceTowerKey := IniRead(SettingsFile, "RecordingHotkeys", "PlaceTowerKey", "f")
 global UpgradeTowerKey := IniRead(SettingsFile, "RecordingHotkeys", "UpgradeTowerKey", "^u")
-global AlignCameraKey := IniRead(SettingsFile, "RecordingHotkeys", "AlignCameraKey", "^t")
+global AlignCameraKey := IniRead(SettingsFile, "RecordingHotkeys", "AlignCameraKey", "^g")
 global ChangeDJTrackKey := IniRead(SettingsFile, "RecordingHotkeys", "ChangeDJTrackKey", "^d")
 global SellTowerKey := IniRead(SettingsFile, "RecordingHotkeys", "SellTowerKey", "^x")
 global DeleteTowerRecordingKey := IniRead(SettingsFile, "RecordingHotkeys", "DeleteTowerRecordingKey", "^b")
@@ -284,16 +285,27 @@ global Slots := [
 global readyX := 0
 global readyY := 0
 
-global ChainKey, BeatKey, CaravanKey, CancelPlacementKey, TimeScaleMode, UseTimeScale, TimeScaleMultiplier
+global ChainKey, BeatKey, CaravanKey, SwatVanKey, CancelPlacementKey, TimeScaleMode, UseTimeScale, TimeScaleMultiplier
 ChainKey := IniRead(SettingsFile, "Hotkeys", "Chain", "C")
 BeatKey := IniRead(SettingsFile, "Hotkeys", "Beat", "B")
 CaravanKey := IniRead(SettingsFile, "Hotkeys", "Caravan", "J")
+SwatVanKey := IniRead(SettingsFile, "Hotkeys", "SwatVan", "N")
 global RaiseDeadKey := IniRead(SettingsFile, "Hotkeys", "RaiseTheDead", "V")
 global HologramKey := IniRead(SettingsFile, "Hotkeys", "Hologram", "K")
 global RepoKey := IniRead(SettingsFile, "Hotkeys", "Repo", "L")
 CancelPlacementKey := IniRead(SettingsFile, "Hotkeys", "CancelPlacement", "Q")
 global UpgradeTowerGKey := IniRead(SettingsFile, "Hotkeys", "UpgradeTower", "E")
 global UpgradeTowerGBKey := IniRead(SettingsFile, "Hotkeys", "UpgradeBottom", "Z")
+ChainKey := SanitizeGameplayKeyBinding(ChainKey, "C", "Chain")
+BeatKey := SanitizeGameplayKeyBinding(BeatKey, "B", "Beat")
+CaravanKey := SanitizeGameplayKeyBinding(CaravanKey, "J", "Caravan")
+SwatVanKey := SanitizeGameplayKeyBinding(SwatVanKey, "N", "SwatVan")
+RaiseDeadKey := SanitizeGameplayKeyBinding(RaiseDeadKey, "V", "RaiseTheDead")
+HologramKey := SanitizeGameplayKeyBinding(HologramKey, "K", "Hologram")
+RepoKey := SanitizeGameplayKeyBinding(RepoKey, "L", "Repo")
+CancelPlacementKey := SanitizeGameplayKeyBinding(CancelPlacementKey, "Q", "CancelPlacement")
+UpgradeTowerGKey := SanitizeGameplayKeyBinding(UpgradeTowerGKey, "E", "UpgradeTower")
+UpgradeTowerGBKey := SanitizeGameplayKeyBinding(UpgradeTowerGBKey, "Z", "UpgradeBottom")
 TimeScaleMode := IniRead(SettingsFile, "Options", "TimeScaleMode", "OFF")
 global DebugConsole := IniRead(SettingsFile, "Options", "DebugConsole", "1")
 
@@ -331,6 +343,11 @@ global IsRestarting := false
 global SafeExitFlag := false
 global RestartLock := false
 global InputAutomationSuspended := false
+global LastBlockedHotbarToggleTick := 0
+global FatalRecoveryScheduled := false
+global TowerHotbarVerifiedOnce := false
+global HotbarSafetyMisses := 0
+global HotbarSafetyRecoveryActive := false
 
 global isUiPositionSaved := false
 global isUpgradeAuthorized := false
@@ -404,8 +421,13 @@ if (UpgradeTowerKey = "") {
     global UpgradeTowerKey := IniRead(SettingsFile, "RecordingHotkeys", "UpgradeTowerKey", "^u")
 }
 if (AlignCameraKey = "") {
-    IniWrite("^t", SettingsFile, "RecordingHotkeys", "AlignCameraKey")
-    global AlignCameraKey := IniRead(SettingsFile, "RecordingHotkeys", "AlignCameraKey", "^t")
+    IniWrite("^g", SettingsFile, "RecordingHotkeys", "AlignCameraKey")
+    global AlignCameraKey := IniRead(SettingsFile, "RecordingHotkeys", "AlignCameraKey", "^g")
+}
+if IsTowerHotbarToggleKeySpec(AlignCameraKey) {
+    AlignCameraKey := "^g"
+    IniWrite(AlignCameraKey, SettingsFile, "RecordingHotkeys", "AlignCameraKey")
+    WriteRuntimeLog("HOTBAR", "Migrated the unsafe Align Camera shortcut away from T to Ctrl+G.", "WARN")
 }
 if (ChangeDJTrackKey = "") {
     IniWrite("^d", SettingsFile, "RecordingHotkeys", "ChangeDJTrackKey")
@@ -433,6 +455,7 @@ if (UseRaiseDeadKey = "") {
 }
 
 RegisterRecordingHotkeys()
+RegisterTowerHotbarProtection()
 
 ;Got this from someone on a Discord server
 RegisterRecordingHotkeys(oldKeys := "") {
@@ -463,6 +486,120 @@ RegisterRecordingHotkeys(oldKeys := "") {
     Hotkey("~LButton Up", DetectUpgrade, "On")
 
     HotIf()
+}
+
+ShouldProtectTowerHotbarToggle(*) {
+    global RunningStrategy, InputAutomationSuspended
+    return RunningStrategy && !InputAutomationSuspended
+        && WinActive("ahk_exe RobloxPlayerBeta.exe")
+}
+
+RegisterTowerHotbarProtection() {
+    HotIf(ShouldProtectTowerHotbarToggle)
+    Hotkey("$*t", BlockTowerHotbarToggle, "On")
+    Hotkey("$*t Up", BlockTowerHotbarToggle, "On")
+    HotIf()
+}
+
+BlockTowerHotbarToggle(*) {
+    global LastBlockedHotbarToggleTick
+    if (A_TickCount - LastBlockedHotbarToggleTick >= 2000) {
+        LastBlockedHotbarToggleTick := A_TickCount
+        WriteRuntimeLog("HOTBAR", "Blocked an accidental consumables hotbar toggle while the strategy was running.", "WARN")
+    }
+}
+
+IsTowerHotbarToggleKeySpec(keySpec) {
+    normalized := StrLower(RegExReplace(String(keySpec), "[\s\^+!#~*$<>]", ""))
+    return normalized = "t" || normalized = "sc014" || normalized = "vk54"
+}
+
+SanitizeGameplayKeyBinding(keySpec, fallback, iniName) {
+    global SettingsFile
+    if !IsTowerHotbarToggleKeySpec(keySpec)
+        return keySpec
+
+    IniWrite(fallback, SettingsFile, "Hotkeys", iniName)
+    WriteRuntimeLog("HOTBAR", "Migrated unsafe TDS keybind '" iniName "' away from T to " fallback ".", "WARN")
+    return fallback
+}
+
+BlockUnsafeRecordingHotkeyPassthrough(keySpec, actionName := "recording hotkey") {
+    global RunningStrategy
+    if (!RunningStrategy || !IsTowerHotbarToggleKeySpec(keySpec))
+        return false
+
+    WriteRuntimeLog("HOTBAR", "Blocked " actionName " from forwarding T into Roblox during strategy playback.", "ERROR")
+    return true
+}
+
+SendGameplayKey(keySpec, actionName := "gameplay action") {
+    global InputAutomationSuspended, RunningStrategy
+    if (InputAutomationSuspended)
+        return false
+
+    if IsTowerHotbarToggleKeySpec(keySpec) {
+        detail := actionName " attempted to send reserved T hotkey"
+        WriteRuntimeLog("HOTBAR", "Blocked " detail ".", "ERROR")
+        LogToConsole("HOTBAR SAFETY: " actionName " was blocked because T only opens consumables.", true, false)
+        if (RunningStrategy)
+            TriggerUnsafeHotbarRecovery(detail)
+        return false
+    }
+
+    SendEvent("{" keySpec "}")
+    return true
+}
+
+IsTowerHotbarMonitoringPhase() {
+    global CurrentMacroPhase
+    return CurrentMacroPhase = "strategy-playback" || CurrentMacroPhase = "strategy-maintenance"
+}
+
+TriggerUnsafeHotbarRecovery(detail, inspection := "") {
+    global HotbarSafetyRecoveryActive
+    if (HotbarSafetyRecoveryActive)
+        return
+
+    HotbarSafetyRecoveryActive := true
+    inspectionText := ""
+    if IsObject(inspection) {
+        observed := Trim(RegExReplace(inspection.text, "\s+", " "))
+        if (observed = "")
+            observed := "<no price text>"
+        inspectionText := "; OCR=" observed "; region=" (inspection.HasProp("region") ? inspection.region : "unavailable")
+    }
+
+    WriteRuntimeLog("HOTBAR", "UNSAFE HOTBAR: " detail inspectionText
+        ". All input was suspended; no slot key, click, or T recovery input was sent.", "ERROR")
+    LogToConsole("HOTBAR SAFETY: " detail ". Input is suspended and Roblox will restart without pressing T.", true, false)
+    SuspendAutomationInput("unsafe-consumable-hotbar")
+    SetMacroPhase("hotbar-safety-recovery", detail, 0)
+    KillSubmacros()
+    CloseRoblox()
+    SafeReload("unsafe-consumable-hotbar")
+}
+
+HotbarSafetyWatchdog(*) {
+    global RunningStrategy, InputAutomationSuspended, HotbarSafetyMisses
+    if (!RunningStrategy || InputAutomationSuspended || !IsTowerHotbarMonitoringPhase()
+        || !WinActive("ahk_exe RobloxPlayerBeta.exe"))
+        return
+
+    inspection := InspectTowerHotbarBeforeSlotInput()
+    if (inspection.safe) {
+        HotbarSafetyMisses := 0
+        return
+    }
+
+    HotbarSafetyMisses += 1
+    if (HotbarSafetyMisses < 2) {
+        WriteRuntimeLog("HOTBAR", "Watchdog did not see tower prices (probe 1/2); waiting for confirmation before recovery.", "WARN")
+        return
+    }
+
+    HotbarSafetyMisses := 0
+    TriggerUnsafeHotbarRecovery("continuous watchdog found no tower price in slots 1-2", inspection)
 }
 
 DetectTowerForUpgrading(*) {
@@ -672,7 +809,9 @@ if (savedStartTime != 0)
     AutorunStartTime := Integer(savedStartTime)
 
 if (autoRun = 1 && autoStrat != "" && FileExist(autoStrat)) {
+    WriteRuntimeLog("MAIN", "Automatic resume is loading strategy: " autoStrat ".")
     LoadStrategyFile(autoStrat)
+    WriteRuntimeLog("MAIN", "Automatic resume strategy loaded successfully.")
     RunningStrategy := true
     ResumeAutomationInput("automatic-resume")
     ActivateRoblox()
@@ -1312,6 +1451,11 @@ MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
 global Tab5_Help11 := MainGui.Add("Text", "x280 y182 w18 h18 0x200 Center Hidden", "?")
 Tab5_Help11.OnEvent("Click", HelpBrawler)
 
+MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
+global Tab5_LblSwatVan := MainGui.Add("Text", "x30 y210 w70 h16 Hidden", "SWAT Van:")
+MainGui.SetFont("s8 w400 c000000")
+global SwatVanKeyCtrl := MainGui.Add("Edit", "x105 y207 w40 h18 Center Limit1 Hidden", SwatVanKey)
+
 MainGui.SetFont("s9 w400 cB79AA0")
 global Tab5_Lbl99 := MainGui.Add("Text", "x183 y248 BackgroundTrans Hidden", "cancel:")
 MainGui.SetFont("s8 w400 c000000")
@@ -1629,7 +1773,7 @@ global SettingsViewportTop := 92
 global SettingsViewportBottom := 532
 global SettingsScrollableCtrls := [Tab5_Section1, Tab5_Line1, Tab5_Lbl1, ChainKeyCtrl,
     Tab5_Lbl2, BeatKeyCtrl, Tab5_Lbl3, CaravanKeyCtrl, Tab5_Lbl44, RaiseDeadKeyCtrl,
-    Tab5_Lbl55, HologramKeyCtrl, Tab5_Lbl56, RepoKeyCtrl, Tab5_Help11,
+    Tab5_Lbl55, HologramKeyCtrl, Tab5_Lbl56, RepoKeyCtrl, Tab5_Help11, Tab5_LblSwatVan, SwatVanKeyCtrl,
     Tab5_Lbl99, CancelPlacementKeyCtrl, Tab5_LblUPG, UpgradeTowerGCtrl,
     Tab5_LblUPGBTM, UpgradeTowerGBCtrl, Tab5_Section2, Tab5_Line2, UseUpgradeHCtrl,
     Tab5_Help6, UseRestartBtnCtrl, Tab5_Help4, UsePlayAgainBtnCtrl, Tab5_Help5,
@@ -1969,6 +2113,7 @@ ShowChildGui()
 EnableStratRotation()
 
 SetTimer(Hoverwatchdog, 10)
+SetTimer(HotbarSafetyWatchdog, 12000)
 
 OnMessage(0x0201, WM_LBUTTONDOWN_Drag)
 OnMessage(0x0200, EditorHotbarDragMouseMove)
@@ -2266,7 +2411,7 @@ CenterLegacyTabLayouts() {
          WebhookSepatateTriumphScreenshotsCtrl, WebhookLinkCtrl2, Tab4_Info, Tab4_Btn1, Tab4_Btn2],
         [Tab5_Section1, Tab5_Line1, Tab5_Lbl1, ChainKeyCtrl, Tab5_Lbl2, BeatKeyCtrl,
          Tab5_Lbl3, CaravanKeyCtrl, Tab5_Lbl44, RaiseDeadKeyCtrl, Tab5_Lbl55, HologramKeyCtrl,
-         Tab5_Lbl56, RepoKeyCtrl, Tab5_Help11, Tab5_Lbl99, CancelPlacementKeyCtrl,
+         Tab5_Lbl56, RepoKeyCtrl, Tab5_Help11, Tab5_LblSwatVan, SwatVanKeyCtrl, Tab5_Lbl99, CancelPlacementKeyCtrl,
          Tab5_LblUPG, UpgradeTowerGCtrl, Tab5_LblUPGBTM, UpgradeTowerGBCtrl,
          Tab5_Section2, Tab5_Line2, UseUpgradeHCtrl, Tab5_Help6, UseRestartBtnCtrl, Tab5_Help4,
          UsePlayAgainBtnCtrl, Tab5_Help5, CheckTheMapCtrl, Tab5_Help7, UseNumbersForHotbarCtrl,
@@ -2322,7 +2467,7 @@ ShowTabContent(tab) {
 } else if (tab = "Tab5") {
         for ctrl in [Tab5_Section1, Tab5_Line1, Tab5_Lbl1, ChainKeyCtrl,
                      Tab5_Lbl2, BeatKeyCtrl, Tab5_Lbl3, CaravanKeyCtrl,
-                     Tab5_Lbl44, RaiseDeadKeyCtrl, Tab5_Lbl55, Tab5_Lbl56, HologramKeyCtrl, RepoKeyCtrl,
+                     Tab5_Lbl44, RaiseDeadKeyCtrl, Tab5_Lbl55, Tab5_Lbl56, HologramKeyCtrl, RepoKeyCtrl, Tab5_LblSwatVan, SwatVanKeyCtrl,
                      Tab5_Lbl99, Tab5_LblUPG, Tab5_LblUPGBTM, CancelPlacementKeyCtrl, UpgradeTowerGCtrl, UpgradeTowerGBCtrl, Tab1_Lbl3, TimeScaleModeCtrl,
                      Tab5_Section2, Tab5_Line2, Tab5_Help6,
                      UseRestartBtnCtrl, Tab5_Help4, UsePlayAgainBtnCtrl, Tab5_Help5,
@@ -2343,6 +2488,7 @@ ShowTabContent(tab) {
         ChainKeyCtrl.Value := ChainKey
         BeatKeyCtrl.Value := BeatKey
         CaravanKeyCtrl.Value := CaravanKey
+        SwatVanKeyCtrl.Value := SwatVanKey
         RaiseDeadKeyCtrl.Value := RaiseDeadKey     
         HologramKeyCtrl.Value := HologramKey
         RepoKeyCtrl.Value := RepoKey       
@@ -4914,6 +5060,8 @@ PlaceTowerHK(*) {
     global Recording, Towers, RecordedSteps, ActiveRTowerID, CachedMenuUI, isUiPositionSaved, UseNumbersForHotbar, Slots
 
     if (!Recording) {
+        if BlockUnsafeRecordingHotkeyPassthrough(PlaceTowerKey, "Place Tower hotkey")
+            return
         pureKey := RegExReplace(PlaceTowerKey, "[\^+!#]") 
         SEND_modifiers := RegExMatch(PlaceTowerKey, "^([\^+!#]+)", &match) ? match[1] : ""
         
@@ -4972,7 +5120,7 @@ PlaceTowerHK(*) {
     Sleep((PotatoMode = 1) ? 100 : 40)
     Click()
     Sleep(100)
-    SendEvent("{" CancelPlacementKey "}")
+    SendGameplayKey(CancelPlacementKey, "Cancel placement")
 
     Towers[towerID] := {x: mx, y: my, slot: slot, level: 0, path: 0, pathLevel: 0}
     UpdateTowerIndicator(towerID)
@@ -5025,6 +5173,8 @@ PlaceTowerHK(*) {
 UpgradeTowerHK(*) {
     global Recording, Towers, RecordedSteps, Commander
     if (!Recording) {
+        if BlockUnsafeRecordingHotkeyPassthrough(UpgradeTowerKey, "Upgrade Tower hotkey")
+            return
         pureKey := RegExReplace(UpgradeTowerKey, "[\^+!#]") 
         SEND_modifiers := RegExMatch(UpgradeTowerKey, "^([\^+!#]+)", &match) ? match[1] : ""
         
@@ -5066,6 +5216,8 @@ UpgradeTowerHK(*) {
 ChangeDJTrackHK(*) {
     global Recording, RecordedSteps
     if (!Recording) {
+        if BlockUnsafeRecordingHotkeyPassthrough(ChangeDJTrackKey, "DJ Track hotkey")
+            return
         pureKey := RegExReplace(ChangeDJTrackKey, "[\^+!#]") 
         SEND_modifiers := RegExMatch(ChangeDJTrackKey, "^([\^+!#]+)", &match) ? match[1] : ""
         
@@ -5082,6 +5234,8 @@ ChangeDJTrackHK(*) {
 DeleteTowerRecordingHK(*) {
     global Recording, Towers, RecordedSteps
     if (!Recording) {
+        if BlockUnsafeRecordingHotkeyPassthrough(DeleteTowerRecordingKey, "Delete Recording hotkey")
+            return
         pureKey := RegExReplace(DeleteTowerRecordingKey, "[\^+!#]") 
         SEND_modifiers := RegExMatch(DeleteTowerRecordingKey, "^([\^+!#]+)", &match) ? match[1] : ""
         
@@ -5142,6 +5296,8 @@ DeleteTowerRecordingHK(*) {
 SellTowerHK(*) {
     global Recording, Towers, RecordedSteps
     if (!Recording) {
+        if BlockUnsafeRecordingHotkeyPassthrough(SellTowerKey, "Sell Tower hotkey")
+            return
         pureKey := RegExReplace(SellTowerKey, "[\^+!#]") 
         SEND_modifiers := RegExMatch(SellTowerKey, "^([\^+!#]+)", &match) ? match[1] : ""
         
@@ -5186,6 +5342,8 @@ SellTowerHK(*) {
 
 AlignCameraHK(*) {
     if (!Recording) {
+        if BlockUnsafeRecordingHotkeyPassthrough(AlignCameraKey, "Align Camera hotkey")
+            return
         pureKey := RegExReplace(AlignCameraKey, "[\^+!#]") 
         SEND_modifiers := RegExMatch(AlignCameraKey, "^([\^+!#]+)", &match) ? match[1] : ""
         
@@ -5205,6 +5363,8 @@ AlignCameraHK(*) {
 RecordInputsHK(*) {
     global MacroRecording, InputHookObj, MacroSteps, MacroStartTime, RecordedSteps, Recording, KeyDownTimes
     if (!Recording) {
+        if BlockUnsafeRecordingHotkeyPassthrough(RecordInputsKey, "Record Inputs hotkey")
+            return
         pureKey := RegExReplace(RecordInputsKey, "[\^+!#]") 
         SEND_modifiers := RegExMatch(RecordInputsKey, "^([\^+!#]+)", &match) ? match[1] : ""
         
@@ -5240,6 +5400,8 @@ CloneTowerHK(*) {
     static LastCallTime := 0
 
     if (!Recording) {
+        if BlockUnsafeRecordingHotkeyPassthrough(HoloKey, "Clone Tower hotkey")
+            return
         pureKey := RegExReplace(HoloKey, "[\^+!#]") 
         SEND_modifiers := RegExMatch(HoloKey, "^([\^+!#]+)", &match) ? match : ""
         
@@ -5270,6 +5432,8 @@ BrawlerRepositionHK(*) {
     static LastCallTime := 0
 
     if (!Recording) {
+        if BlockUnsafeRecordingHotkeyPassthrough(HoloKey, "Brawler Reposition hotkey")
+            return
         pureKey := RegExReplace(HoloKey, "[\^+!#]") 
         SEND_modifiers := RegExMatch(HoloKey, "^([\^+!#]+)", &match) ? match : ""
         
@@ -5314,6 +5478,8 @@ ActivateRaiseTheDeadHK(*) {
     static LastCallTime := 0
 
     if (!Recording) {
+        if BlockUnsafeRecordingHotkeyPassthrough(UseRaiseDeadKey, "Raise the Dead hotkey")
+            return
         pureKey := RegExReplace(UseRaiseDeadKey, "[\^+!#]") 
         SEND_modifiers := RegExMatch(UseRaiseDeadKey, "^([\^+!#]+)", &match) ? match : ""
         
@@ -5434,7 +5600,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
 
     canUseAbility := false
 
-    SendEvent("{" CancelPlacementKey "}")
+    SendGameplayKey(CancelPlacementKey, "Cancel placement")
     Sleep 50
     if (LastOpenedTowerID != "" || Recording) {
         Click(ScaleX(unfocusX), ScaleY(unfocusY))
@@ -5445,7 +5611,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
 
     loop {
         attempts++
-        SendEvent("{" HologramKey "}")
+        SendGameplayKey(HologramKey, "Hologram ability")
         Sleep 300
 
         getRobloxPos(,,&w,&h)
@@ -5505,7 +5671,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
         MouseClick()
 
         Sleep 50
-        SendEvent("{" CancelPlacementKey "}")
+        SendGameplayKey(CancelPlacementKey, "Cancel placement")
 
         Sleep 350
 
@@ -5559,7 +5725,7 @@ BrawlerReposition(towerId, x, y) {
             return false
         }
 
-        SendEvent("{" CancelPlacementKey "}")
+        SendGameplayKey(CancelPlacementKey, "Cancel placement")
         Sleep 20
 
         if (LastOpenedTowerID != towerId && LastOpenedTowerID != "") {
@@ -5594,7 +5760,7 @@ BrawlerReposition(towerId, x, y) {
         }
 
         getRobloxPos(,,&w,&h)
-        send "{" RepoKey "}"
+        SendGameplayKey(RepoKey, "Reposition ability")
 
         x1 := Round(w * 0.2)
         y1 := Round(h * 0.18)
@@ -5615,7 +5781,7 @@ BrawlerReposition(towerId, x, y) {
             placeattempts++
 
             if (placeattempts > 5) {
-                Send("{" CancelPlacementKey "}")
+                SendGameplayKey(CancelPlacementKey, "Cancel placement")
                 LogToConsole("Failed to reposition brawler :( ")
                 return false
             }
@@ -5660,14 +5826,35 @@ ActivateRaiseTheDead(wait := 0) {
         Sleep(wait)
     }
 
-    SendEvent("{" CancelPlacementKey "}")
+    SendGameplayKey(CancelPlacementKey, "Cancel placement")
     if (LastOpenedTowerID != "") {
         Click(ScaleX(unfocusX), ScaleY(unfocusY))
         Sleep(450)
     }
 
-    SendEvent("{" RaiseDeadKey "}")
+    SendGameplayKey(RaiseDeadKey, "Raise the Dead ability")
     LogToConsole("Successfully activated 'Raise the Dead'")
+}
+
+ActivateSwatVan(wait := 0) {
+    global CancelPlacementKey, LastOpenedTowerID, unfocusX, unfocusY, SwatVanKey, Recording
+    global InputAutomationSuspended
+
+    if (InputAutomationSuspended)
+        return false
+    if (wait > 0 && !Recording)
+        Sleep(wait)
+
+    SendGameplayKey(CancelPlacementKey, "Cancel placement")
+    if (LastOpenedTowerID != "") {
+        Click(ScaleX(unfocusX), ScaleY(unfocusY))
+        Sleep(450)
+    }
+
+    SendGameplayKey(SwatVanKey, "SWAT Van ability")
+    LogToConsole("Activated Enforcer's SWAT Van ability")
+    TouchMacroProgress("SWAT Van ability")
+    return true
 }
 
 
@@ -5919,7 +6106,7 @@ NormalizeKey(keyName) {
 
 
 SaveAllSettings(ctrl, *) {
-    global ChainKey, BeatKey, CaravanKey, CancelPlacementKey, TimeScaleMode, UseTimeScale
+    global ChainKey, BeatKey, CaravanKey, SwatVanKey, CancelPlacementKey, TimeScaleMode, UseTimeScale
     global TimeScaleMultiplier, VipLink, UseVipServer, AlwaysOnTop, DebugConsole
     global PotatoMode, UseRestartBtn, UsePlayAgainBtn, CheckTheMap
     global PlaceTowerKey, UpgradeTowerKey, AlignCameraKey, ChangeDJTrackKey
@@ -5945,6 +6132,10 @@ SaveAllSettings(ctrl, *) {
     tempChainKey := SubStr(RegExReplace(ChainKeyCtrl.Value, "\s", ""), 1, 1)
     tempBeatKey := SubStr(RegExReplace(BeatKeyCtrl.Value, "\s", ""), 1, 1)
     tempCaravanKey := SubStr(RegExReplace(CaravanKeyCtrl.Value, "\s", ""), 1, 1)
+    tempSwatVanKey := SubStr(RegExReplace(SwatVanKeyCtrl.Value, "\s", ""), 1, 1)
+    tempRaiseDeadKey := SubStr(RegExReplace(RaiseDeadKeyCtrl.Value, "\s", ""), 1, 1)
+    tempHologramKey := SubStr(RegExReplace(HologramKeyCtrl.Value, "\s", ""), 1, 1)
+    tempRepoKey := SubStr(RegExReplace(RepoKeyCtrl.Value, "\s", ""), 1, 1)
     tempCancelPlacementKey := SubStr(RegExReplace(CancelPlacementKeyCtrl.Value, "\s", ""), 1, 1)
     tempUpgradeTowerGKey := SubStr(RegExReplace(UpgradeTowerGCtrl.Value, "\s", ""), 1, 1)
     tempUpgradeTowerGBKey := SubStr(RegExReplace(UpgradeTowerGBCtrl.Value, "\s", ""), 1, 1)
@@ -5955,12 +6146,20 @@ SaveAllSettings(ctrl, *) {
         tempBeatKey  := "B"
     if (tempCaravanKey = "")         
         tempCaravanKey := "J"
+    if (tempSwatVanKey = "")
+        tempSwatVanKey := "N"
+    if (tempRaiseDeadKey = "")
+        tempRaiseDeadKey := "V"
+    if (tempHologramKey = "")
+        tempHologramKey := "K"
+    if (tempRepoKey = "")
+        tempRepoKey := "L"
     if (tempCancelPlacementKey = "") 
         tempCancelPlacementKey := "Q"
     if (tempUpgradeTowerGKey = "")
         tempUpgradeTowerGKey := "E"
     if (tempUpgradeTowerGBKey = "")
-        tempUpgradeTowerGKey := "Z"
+        tempUpgradeTowerGBKey := "Z"
 
     tempPlaceTowerKey := NormalizeKey(PlaceTowerKeyCtrl.Value)
     tempUpgradeTowerKey := NormalizeKey(UpgradeTowerKeyCtrl.Value)
@@ -5978,6 +6177,10 @@ SaveAllSettings(ctrl, *) {
         {val: NormalizeKey(tempChainKey), name: "Call of Arms Ability"},
         {val: NormalizeKey(tempBeatKey), name: "Drop the Beat Ability"},
         {val: NormalizeKey(tempCaravanKey), name: "Support Caravan Ability"},
+        {val: NormalizeKey(tempSwatVanKey), name: "SWAT Van Ability"},
+        {val: NormalizeKey(tempRaiseDeadKey), name: "Raise the Dead Ability"},
+        {val: NormalizeKey(tempHologramKey), name: "Hologram Ability"},
+        {val: NormalizeKey(tempRepoKey), name: "Reposition Ability"},
         {val: NormalizeKey(tempCancelPlacementKey), name: "Cancel Placement"},
         {val: NormalizeKey(tempUpgradeTowerGKey), name: "Upgrade Tower (TDS keybind)"},
         {val: NormalizeKey(tempUpgradeTowerGBKey), name: "Upgrade Bottom Path (TDS keybind)"},
@@ -5999,6 +6202,13 @@ SaveAllSettings(ctrl, *) {
             . "Please change it before saving.", "Empty Hotkey", 0x10)
             return
         }
+        if IsTowerHotbarToggleKeySpec(item.val) {
+            MsgBox("Error: T is reserved by TDS for switching to the consumables hotbar.`n`n"
+                . "The key is assigned to: `"" item.name "`"`n"
+                . "Choose a key that does not use T, including modified shortcuts such as Ctrl+T.",
+                "Unsafe T Hotkey", 0x10)
+            return
+        }
         if UsedKeys.Has(item.val) {
             MsgBox("Error: Duplicate hotkey detected!`n`n" 
                  . "The hotkey is assigned to: `"" UsedKeys[item.val] "`"`n"
@@ -6012,6 +6222,10 @@ SaveAllSettings(ctrl, *) {
     ChainKey := tempChainKey
     BeatKey := tempBeatKey
     CaravanKey := tempCaravanKey
+    SwatVanKey := tempSwatVanKey
+    RaiseDeadKey := tempRaiseDeadKey
+    HologramKey := tempHologramKey
+    RepoKey := tempRepoKey
     CancelPlacementKey := tempCancelPlacementKey
     UpgradeTowerGKey := tempUpgradeTowerGKey
     UpgradeTowerGBKey := tempUpgradeTowerGBKey
@@ -6029,10 +6243,6 @@ SaveAllSettings(ctrl, *) {
     RecordInputsKey := tempRecordInputsKey
     HoloKey := tempHoloKey
     UseRaiseDeadKey := tempUseRaiseDeadKey
-    RaiseDeadKey := RaiseDeadKeyCtrl.Value
-    HologramKey := HologramKeyCtrl.Value
-    RepoKey := RepoKeyCtrl.Value
-
     RegisterRecordingHotkeys(oldRecordingKeys)
 
     TimeScaleMode := (TimeScaleModeCtrl.Text = "") ? "OFF" : TimeScaleModeCtrl.Text
@@ -6055,6 +6265,7 @@ SaveAllSettings(ctrl, *) {
     IniWrite(ChainKey, SettingsFile, "Hotkeys", "Chain")
     IniWrite(BeatKey, SettingsFile, "Hotkeys", "Beat")
     IniWrite(CaravanKey, SettingsFile, "Hotkeys", "Caravan")
+    IniWrite(SwatVanKey, SettingsFile, "Hotkeys", "SwatVan")
     IniWrite(CancelPlacementKey, SettingsFile, "Hotkeys", "CancelPlacement")
     IniWrite(UpgradeTowerGKey, SettingsFile, "Hotkeys", "UpgradeTower")
     IniWrite(UpgradeTowerGBKey, SettingsFile, "Hotkeys", "UpgradeBottom")
@@ -6454,7 +6665,7 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
     global SettingsFile, requiredTowers, modifiers, LastOpenedTowerID
     global LastSkipCheck, SKIP_CHECK_INTERVAL, AutorunStartTime, StateFile
     global WebhookEnabled, CurrentStratStartTime, CurrentRunCount, gamemap, AbstractTowerSlots, AbstractTowerSlot
-    global StrategyHotbarRemapSummary, EvolutionQueueAutoEquip
+    global StrategyHotbarRemapSummary, EvolutionQueueAutoEquip, HotbarSafetyMisses, HotbarSafetyRecoveryActive
 
     if (RunningStrategy != true)
         return
@@ -6590,6 +6801,8 @@ PlayStrategy() {
 
     activeRunId := BeginTrackedRun()
     ResumeAutomationInput("strategy-playback")
+    HotbarSafetyMisses := 0
+    HotbarSafetyRecoveryActive := false
     SetMacroPhase("strategy-playback", "recorded-steps", 0)
     IniWrite(A_TickCount, StateFile, "State", "TimeWhenStartedPlaying")
     AutoSkipSuccessfulCount := 0
@@ -6732,6 +6945,14 @@ ExecuteStep(step) {
         CloneTower(Trim(m[1]), Integer(m[2]), Integer(m[3]), 0)
         return
     }
+    if RegExMatch(step, "i)ActivateSwatVan\s*\(\s*(\d+)\s*\)", &m) {
+        ActivateSwatVan(Integer(m[1]))
+        return
+    }
+    if RegExMatch(step, "i)ActivateSwatVan\s*\(\s*\)", &m) {
+        ActivateSwatVan(0)
+        return
+    }
     if RegExMatch(step, "i)ActivateRaiseTheDead\s*\(\s*(\d+)\s*\)", &m) {
         ActivateRaiseTheDead(Integer(m[1]))
         return
@@ -6758,6 +6979,11 @@ ExecuteStep(step) {
         return
     }
     if RegExMatch(step, 'i)^Send\s*\(\s*"([^"]+)"\s*,\s*hold:=(\d+)\s*\)$', &m) {
+        if IsTowerHotbarToggleKeySpec(m[1]) {
+            WriteRuntimeLog("HOTBAR", "Blocked recorded strategy input '" m[1] "' because it can switch to consumables.", "ERROR")
+            LogToConsole("Recorded T input blocked by strict hotbar safety.", true, false)
+            return
+        }
         SendEvent("{" m[1] " down}")
         HyperSleep(Integer(m[2]))
         SendEvent("{" m[1] " up}")
@@ -6782,18 +7008,9 @@ ExecuteStep(step) {
 }
 
 UseBudgetedConsumable(x, y, name := "Consumable") {
-    global SettingsFile, StateFile
-    budget := KronoxBudgetCheckConsumable(SettingsFile, StateFile, 1)
-    if (!budget.allowed) {
-        LogToConsole("Consumable budget guard skipped " name ": " budget.reason ".", true, false)
-        return false
-    }
-    ActivateRoblox()
-    Click(sX(x, StrategyWidth), sY(y, StrategyHeight))
-    if (!KronoxBudgetRecordConsumable(SettingsFile, StateFile, 1))
-        return false
-    LogToConsole("Used budgeted consumable: " name ".")
-    return true
+    WriteRuntimeLog("HOTBAR", "Blocked automated consumable step '" name "'.", "ERROR")
+    LogToConsole("Consumable step blocked by strict hotbar safety: " name ".", true, false)
+    return false
 }
 
 LowerGraphics() {
@@ -7120,7 +7337,7 @@ CheckRestart() {
         ActivateRoblox()
         Sleep(1500)
         ActivateRoblox()
-        SendEvent("{" CancelPlacementKey "}")
+        SendGameplayKey(CancelPlacementKey, "Cancel placement")
         getRobloxPos(,, &w, &h)
         
         resRevive := AdvImageSearch("Resources\use_revive_ticket.png", w * 0.2, h * 0.2, w * 0.6, h * 0.7)
@@ -8480,6 +8697,71 @@ getSlots() {
 }
 
 
+InspectTowerHotbarBeforeSlotInput() {
+    hwnd := GetRobloxHWND()
+    if (!hwnd)
+        return {safe: false, reason: "Roblox window is missing", text: ""}
+
+    try WinGetClientPos(&clientX, &clientY, &clientW, &clientH, "ahk_id " hwnd)
+    catch Error as err
+        return {safe: false, reason: "Could not read Roblox client position: " err.Message, text: ""}
+
+    if (clientW < 400 || clientH < 300)
+        return {safe: false, reason: "Roblox client is too small for hotbar verification", text: ""}
+
+    slotPoints := getSlots()
+    if (!IsObject(slotPoints) || !slotPoints.Has(1) || !slotPoints.Has(2))
+        return {safe: false, reason: "Tower slot anchors were not found", text: ""}
+
+    firstSlot := slotPoints[1]
+    secondSlot := slotPoints[2]
+    padX := Max(28, Round(clientW * 0.022))
+    left := Max(0, Min(firstSlot[1], secondSlot[1]) - padX)
+    right := Min(clientW - 1, Max(firstSlot[1], secondSlot[1]) + padX)
+    top := Min(clientH - 12, Min(firstSlot[2], secondSlot[2]) + Max(8, Round(clientH * 0.01)))
+    regionW := Max(40, right - left)
+    regionH := Max(12, clientH - top - 2)
+    screenX := clientX + left
+    screenY := clientY + top
+    observedText := ""
+
+    Loop 2 {
+        try observedText := OCR.FromRect(screenX, screenY, regionW, regionH,
+            {lang: "en-US", scale: A_Index = 1 ? 3 : 4, grayscale: A_Index = 2}).Text
+        catch Error
+            observedText := ""
+
+        if (KronoxHotbarTowerPriceCount(observedText) > 0)
+            return {safe: true, reason: "tower price confirmed", text: observedText,
+                region: screenX "," screenY "," regionW "," regionH}
+        Sleep(120)
+    }
+
+    return {safe: false, reason: "no tower price was visible in slots 1-2", text: observedText,
+        region: screenX "," screenY "," regionW "," regionH}
+}
+
+EnsureTowerHotbarBeforeSlotInput(slotNumber, towerID := "") {
+    global TowerHotbarVerifiedOnce
+
+    inspection := InspectTowerHotbarBeforeSlotInput()
+    if (inspection.safe) {
+        if (!TowerHotbarVerifiedOnce) {
+            TowerHotbarVerifiedOnce := true
+            WriteRuntimeLog("HOTBAR", "Tower hotbar visually confirmed before slot input.")
+        }
+        return true
+    }
+
+    detail := inspection.reason " before slot " slotNumber
+    if (towerID != "")
+        detail .= " (" towerID ")"
+
+    TriggerUnsafeHotbarRecovery(detail, inspection)
+    return false
+}
+
+
 SpawnTower(X, Y, slotNumber, towerID) {
     global Towers, LastOpenedTowerID, CancelPlacementKey, canUseAbility, UseNumbersForHotbar, Slots
     global AbstractTowerSlots, AbstractTowerSlot
@@ -8519,6 +8801,9 @@ SpawnTower(X, Y, slotNumber, towerID) {
         }
 
         ActivateRoblox()
+
+        if !EnsureTowerHotbarBeforeSlotInput(slotNumber, towerID)
+            return false
         
         if UseNumbersForHotbar {
             Send("{" slotNumber "}")
@@ -8532,7 +8817,7 @@ SpawnTower(X, Y, slotNumber, towerID) {
         Sleep((PotatoMode = 1) ? 100 : 40)
         MouseClick()
         Sleep(100)
-        SendEvent("{" CancelPlacementKey "}")
+        SendGameplayKey(CancelPlacementKey, "Cancel placement")
 
         placedSuccessfully := waitForTowerUI(&resV2)
 
@@ -8571,6 +8856,9 @@ SpawnTower(X, Y, slotNumber, towerID) {
                 placedSuccessfully := false
 
                 ActivateRoblox()
+
+                if !EnsureTowerHotbarBeforeSlotInput(slotNumber, towerID)
+                    return false
         
                 Send("{" slotNumber "}")
                 Sleep(30)
@@ -8602,7 +8890,7 @@ SpawnTower(X, Y, slotNumber, towerID) {
                 }
                 
                 if (!placedSuccessfully) {
-                    SendEvent("{" CancelPlacementKey "}")
+                    SendGameplayKey(CancelPlacementKey, "Cancel placement")
                     attemptMultiplier := attemptMultiplier * 2
                 }
             }
@@ -8791,12 +9079,12 @@ UpgradeTower(towerID, skipOpen := false, totalUpgrades := 1, path := 0, pathLeve
             if (UseHForUpgrade) {
                 if (path != 0 && nextLevel > pathLevel && pathLevel != 0) {
                     if (path = 1) { 
-                        SendEvent("{" UpgradeTowerGKey "}")
+                        SendGameplayKey(UpgradeTowerGKey, "Upgrade tower keybind")
                     } else if (path = 2) {
-                    SendEvent("{" UpgradeTowerGBKey "}")
+                    SendGameplayKey(UpgradeTowerGBKey, "Upgrade bottom path keybind")
                     } 
                 } else {
-                    SendEvent("{" UpgradeTowerGKey "}")
+                    SendGameplayKey(UpgradeTowerGKey, "Upgrade tower keybind")
                 }
             } else {
                 Click(UpgradeX, UpgradeY)
@@ -8944,7 +9232,7 @@ UseAbilities(*) {
             Sleep(200)
             res := AdvImageSearch("Resources/Skip.png", Round(A_ScreenWidth * 0.3), 0, Round(A_ScreenWidth * 0.7), Round(A_ScreenHeight * 0.35), 0.5, 1.5)
             if (res.status = "success" && res.score >= 0.65 && ShouldAutoSkipWave()) {
-                SendEvent("{" CancelPlacementKey "}")
+                SendGameplayKey(CancelPlacementKey, "Cancel placement")
                 MouseGetPos(&cx, &cy)
                 Click(res.x, res.y)
                 AutoSkipSuccessfulCount++
@@ -8966,7 +9254,7 @@ UseAbilities(*) {
             Sleep(100)
         }
         LastChainTime := A_TickCount
-        SendEvent("{" ChainKey "}")
+        SendGameplayKey(ChainKey, "Call of Arms ability")
         LogToConsole("Activated Call of Arms")
         TouchMacroProgress("Call of Arms")
         canUseAbility := true
@@ -8995,13 +9283,13 @@ UseAbilities(*) {
         canBeUpgraded := false
         
         canUseAbility := false
-        SendEvent("{" CancelPlacementKey "}")
+        SendGameplayKey(CancelPlacementKey, "Cancel placement")
         if (LastOpenedTowerID != "") {
             Click(ScaleX(unfocusX), ScaleY(unfocusY))
             Sleep(300)
         }
         LastCaravanTime := A_TickCount
-        SendEvent("{" CaravanKey "}")
+        SendGameplayKey(CaravanKey, "Support Caravan ability")
         LogToConsole("Activated Support Caravan")
         TouchMacroProgress("Support Caravan")
         if (LastOpenedTowerID != "") {
@@ -9017,7 +9305,7 @@ UseAbilities(*) {
 
         canBeUpgraded := false
 
-        SendEvent("{" CancelPlacementKey "}")
+        SendGameplayKey(CancelPlacementKey, "Cancel placement")
         if (LastOpenedTowerID != "DJ" && LastOpenedTowerID != "") {
             Click(ScaleX(unfocusX), ScaleY(unfocusY))
             Sleep(100)
@@ -9027,7 +9315,7 @@ UseAbilities(*) {
             if (InputAutomationSuspended)
                 return
             LastDropTime := A_TickCount
-            SendEvent("{" BeatKey "}")
+            SendGameplayKey(BeatKey, "Drop the Beat ability")
 
             Sleep 350
             getRobloxPos(,,&w,&h)
@@ -9671,8 +9959,9 @@ WriteRuntimeLog(source, text, level := "INFO") {
 }
 
 SetMacroPhase(phase, detail := "", timeoutMs := 0) {
-    global StateFile
+    global StateFile, CurrentMacroPhase
 
+    CurrentMacroPhase := phase
     detail := StrReplace(String(detail), "`r", "")
     detail := StrReplace(detail, "`n", " | ")
     previousPhase := ""
@@ -9756,7 +10045,7 @@ ResumeAutomationInput(reason := "") {
 }
 
 HandleRuntimeError(err, mode) {
-    global RunningStrategy
+    global RunningStrategy, FatalRecoveryScheduled
     message := "Unhandled error"
     try message := err.Message
     location := ""
@@ -9769,7 +10058,19 @@ HandleRuntimeError(err, mode) {
     if (RunningStrategy)
         try SuspendAutomationInput("fatal-error")
     try SetMacroPhase("fatal-error", detail, 15000)
+    if (RunningStrategy && !FatalRecoveryScheduled) {
+        FatalRecoveryScheduled := true
+        ; Do not reload from inside AutoHotkey's error callback. Queue recovery
+        ; on a clean thread so OCR/COM failures cannot strand the last UI status.
+        try SetTimer(RecoverFromRuntimeError.Bind(detail), -1000)
+    }
     return RunningStrategy
+}
+
+RecoverFromRuntimeError(detail, *) {
+    global RunningStrategy
+    if (RunningStrategy)
+        SafeReload("fatal-error")
 }
 
 LogToConsole(text, SendWebhookInstantly := false, flush := true) {
@@ -10779,9 +11080,8 @@ RunAutoSpinTool(*) {
 
 
 RunAutoConsumableTool(*) {
-    if (A_PtrSize == 4) {
-    Run('"' A_ScriptDir '\submacros\AutoHotkey32.exe" "' A_ScriptDir '\submacros\auto_open_consumable.ahk" ')
-    } else {
-        Run('"' A_ScriptDir '\submacros\AutoHotkey64.exe" "' A_ScriptDir '\submacros\auto_open_consumable.ahk" ')
-    }
+    WriteRuntimeLog("HOTBAR", "Blocked the legacy Auto Consumable tool under strict tower-hotbar safety.", "WARN")
+    MsgBox("The Auto Consumable tool is disabled in Kronox's Edition.`n`n"
+        . "The macro will not open or use the consumables hotbar.",
+        "Strict Tower Hotbar Safety", 0x40)
 }

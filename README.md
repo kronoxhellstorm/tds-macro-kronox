@@ -18,6 +18,11 @@ Kronox's Edition is an analytics- and strategy-development-focused fork of **Ult
 * **TDS Update Canary** - Detect a changed in-game TDS version and guard its first run so a loss or watchdog recovery stops unattended looping.
 * **Absolute Mode** - Optional unattended recovery that releases all input and hard-resets Roblox after a prolonged join or no-progress stall.
 * **Input Failsafe** - Runtime and watchdog errors disable click/ability timers and release held keyboard or mouse input before recovery.
+* **Strict Tower Hotbar Guard** - Reserves `T` exclusively for TDS, migrates unsafe TDS keybinds and the old Align Camera shortcut away from `T`, blocks physical, recording-shortcut, and recorded-strategy `T` input, visually confirms tower price labels before every slot input, and continuously double-checks the active hotbar during strategy playback. If consumables mode is detected, it suspends all input and restarts Roblox without pressing `T`. Automated and legacy-tool consumable paths are fail-closed.
+* **Long-Run OCR Reliability** - Correct GDI bitmap/DC ownership prevents scaled OCR checks from exhausting Windows resources; fatal OCR errors now queue a safe macro recovery instead of freezing on the last status line.
+* **Native Crash Recovery** - If the main AutoHotkey process disappears during a persisted run, the watchdog releases input, cleanly restarts Roblox, and relaunches the strategy instead of silently exiting.
+* **Hardened Runtime Startup** - Embedded restart runtimes use AutoHotkey 2.0.19 or newer, and replacement processes are supervised through startup with bounded retries and a safe idle fallback.
+* **SWAT Van Ability Keybind** - Configure Enforcer's SWAT Van key under TDS Keybinds and call it from a strategy with `ActivateSwatVan()` or `ActivateSwatVan(waitMs)`.
 * **Fork-Safe Updates** - Update checks use only the Kronox Edition repository. New releases always produce an in-app notification; packaged releases can install automatically after creating a backup, while Git working copies remain notification-only.
 
 ## Original project
@@ -109,13 +114,7 @@ Analytics now includes **By Modifiers** and **By XP Boost** scopes. Modifier rew
 
 The Timescale guard stores a remaining ticket balance, keeps the configured reserve untouched, and can cap ticket use for the current macro session. If a ticket would cross either boundary, that run continues safely at 1x.
 
-Recorded strategies may opt into guarded item clicks with:
-
-```ahk
-UseConsumable(960, 540, "Name shown in the log")
-```
-
-The click is skipped after the configured per-run or per-session limit. Existing `Click(...)` steps are not silently reclassified as consumables.
+Consumable automation is disabled by the Strict Tower Hotbar Guard. Legacy `UseConsumable(...)` steps and the old Auto Consumable tool log a safety block and send no input. Existing generic `Click(...)` steps are not silently reclassified as consumables.
 
 ### TDS Update Canary
 

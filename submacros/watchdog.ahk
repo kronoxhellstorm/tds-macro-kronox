@@ -1,4 +1,4 @@
-﻿#Requires AutoHotkey v2.0
+﻿#Requires AutoHotkey v2.0.19+
 #SingleInstance Force
 #NoTrayIcon
 
@@ -83,6 +83,17 @@ Loop {
     loopCounter++ 
      
     if (MainPID != "" && !ProcessExist(MainPID)) {
+        ; Intentional stops and reloads terminate this watchdog first. Reaching
+        ; this branch means the owner vanished unexpectedly (for example, a
+        ; native AutoHotkey or OCR crash). Preserve unattended recovery instead
+        ; of silently abandoning Roblox while State.Running remains set.
+        if KronoxFeatureBool(IniRead(StateFile, "State", "Running", 0)) {
+            WriteRuntimeLog("WATCHDOG", "Main PID " MainPID
+                " vanished unexpectedly; performing a clean crash recovery.", "ERROR")
+            RestartMain("main-process-crash", true)
+            return
+        }
+        ReleaseAutomationInputs()
         ExitApp()
     }
 
@@ -1324,12 +1335,62 @@ RestartMain(reason := "watchdog-recovery", forceRobloxReset := false) {
     tempWebhook := IniRead(SettingsFile, "Webhook", "Enabled", "OFF")
     WebhookEnabled := (tempWebhook = "1") ? true : false
 
-    if (A_PtrSize == 4) {
-    Run('"' A_WorkingDir '\submacros\AutoHotkey32.exe" "' A_WorkingDir '\Main.ahk"')
-    } else {
-        Run('"' A_WorkingDir '\submacros\AutoHotkey64.exe" "' A_WorkingDir '\Main.ahk"')
+    LaunchMainWithStartupGuard(reason)
+}
+
+LaunchMainWithStartupGuard(reason := "watchdog-recovery") {
+    global StateFile
+
+    maxAttempts := 3
+    Loop maxAttempts {
+        attempt := A_Index
+        newMainPID := 0
+        try {
+            if (A_PtrSize == 4)
+                Run('"' A_WorkingDir '\submacros\AutoHotkey32.exe" "' A_WorkingDir '\Main.ahk"',,, &newMainPID)
+            else
+                Run('"' A_WorkingDir '\submacros\AutoHotkey64.exe" "' A_WorkingDir '\Main.ahk"',,, &newMainPID)
+        } catch Error as err {
+            WriteRuntimeLog("WATCHDOG", "Failed to launch replacement main on attempt " attempt
+                ": " err.Message, "ERROR")
+        }
+
+        if (newMainPID) {
+            WriteRuntimeLog("WATCHDOG", "Replacement main PID " newMainPID
+                " launched (startup attempt " attempt "/" maxAttempts ").")
+            deadline := A_TickCount + 12000
+            while (A_TickCount < deadline) {
+                Sleep(250)
+                if !ProcessExist(newMainPID)
+                    break
+            }
+            if ProcessExist(newMainPID) {
+                WriteRuntimeLog("WATCHDOG", "Replacement main PID " newMainPID
+                    " survived startup supervision after " reason ".")
+                ExitApp()
+            }
+            WriteRuntimeLog("WATCHDOG", "Replacement main PID " newMainPID
+                " crashed during startup attempt " attempt ".", "ERROR")
+        }
+        ReleaseAutomationInputs()
+        Sleep(750)
     }
 
+    ; Repeated startup failure is safer as a visible idle UI than an endless
+    ; crash/restart loop which continues to control Roblox unattended.
+    IniWrite(0, StateFile, "State", "Running")
+    IniWrite("startup-recovery-failed", StateFile, "Health", "Phase")
+    IniWrite(reason, StateFile, "Health", "Detail")
+    IniWrite(0, StateFile, "Health", "TimeoutMs")
+    WriteRuntimeLog("WATCHDOG", "Replacement main failed " maxAttempts
+        " startup attempts; autorun was disabled and an idle UI will be opened.", "ERROR")
+
+    try {
+        if (A_PtrSize == 4)
+            Run('"' A_WorkingDir '\submacros\AutoHotkey32.exe" "' A_WorkingDir '\Main.ahk"')
+        else
+            Run('"' A_WorkingDir '\submacros\AutoHotkey64.exe" "' A_WorkingDir '\Main.ahk"')
+    }
     ExitApp()
 }
 

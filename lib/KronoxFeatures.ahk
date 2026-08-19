@@ -490,6 +490,20 @@ KronoxBudgetBeginRun(stateFile) {
     IniWrite(0, stateFile, "State", "BudgetConsumablesRun")
 }
 
+KronoxHotbarTowerPriceCount(text) {
+    text := String(text)
+    count := 0
+    searchAt := 1
+    Loop {
+        foundAt := RegExMatch(text, "\$\s*\d[\d,]*", &priceMatch, searchAt)
+        if (!foundAt)
+            break
+        count++
+        searchAt := foundAt + Max(1, StrLen(priceMatch[0]))
+    }
+    return count
+}
+
 KronoxProfilerState() {
     static state := {enabled: false, runId: "", strategy: "", fingerprint: "", file: "",
         stateFile: "", steps: 0, errors: 0, retries: 0, totalMs: 0, slowestMs: 0,
