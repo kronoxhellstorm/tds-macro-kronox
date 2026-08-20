@@ -43,7 +43,7 @@ if (A_PtrSize == 4) {
 #Include "%A_ScriptDir%\lib\KronoxFeatures.ahk"
 #Include "%A_ScriptDir%\submacros\updater.ahk"
 
-ver := "1.3.3-kronox.10"
+ver := "1.3.3-kronox.11"
 ; Kronox's Edition checks only its own releases and never falls back to upstream builds.
 global ForkUpdateRepository := "kronoxhellstorm/tds-macro-kronox"
 
@@ -145,11 +145,88 @@ ApplyDarkControlThemes(guiObj) {
     }
 }
 
+global StartupSplashGui := 0
+global StartupSplashBrowser := 0
+global StartupSplashStartTick := 0
+
+ShowStartupSplash() {
+    global StartupSplashGui, StartupSplashBrowser, StartupSplashStartTick, ver
+
+    splashPath := A_ScriptDir "\Resources\intro.gif"
+    if !FileExist(splashPath)
+        return false
+
+    StartupSplashStartTick := A_TickCount
+    try {
+        StartupSplashGui := Gui("+AlwaysOnTop -Caption +ToolWindow", "Kronox Edition is starting")
+        StartupSplashGui.BackColor := "100C0E"
+        browserCtrl := StartupSplashGui.Add("ActiveX", "x0 y0 w784 h442", "Shell.Explorer")
+        StartupSplashBrowser := browserCtrl.Value
+        StartupSplashBrowser.Silent := true
+        StartupSplashBrowser.Navigate("about:blank")
+        deadline := A_TickCount + 1200
+        while (StartupSplashBrowser.ReadyState != 4 && A_TickCount < deadline)
+            Sleep(10)
+
+        imageUri := "file:///" StrReplace(StrReplace(StrReplace(splashPath, "\", "/"), " ", "%20"), "'", "%27")
+        html := "<!doctype html><html><head><meta http-equiv='X-UA-Compatible' content='IE=edge'><style>"
+            . "html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#100c0e;}"
+            . ".stage{position:relative;width:784px;height:442px;background:#100c0e;}"
+            . ".art{display:block;width:784px;height:442px;border:0;}"
+            . ".boot{position:absolute;left:0;right:0;bottom:0;height:58px;background:rgba(14,7,9,.93);border-top:1px solid #9b1d24;font-family:Bahnschrift,'Trebuchet MS',sans-serif;color:#f5e9ec;}"
+            . ".signal{position:absolute;left:0;top:0;bottom:0;width:4px;background:#ef2b2d;}"
+            . ".copy{position:absolute;left:20px;top:10px;}"
+            . ".title{font-size:17px;font-weight:600;letter-spacing:.15px;}"
+            . ".meta{margin-top:4px;color:#c98e98;font-size:10px;letter-spacing:1.65px;}"
+            . ".version{position:absolute;right:18px;top:21px;color:#d7b7bd;font-size:11px;letter-spacing:.4px;}"
+            . ".rail{position:absolute;left:4px;right:0;bottom:0;height:2px;background:#2d171c;}"
+            . ".fill{width:0;height:100%;background:#ef2b2d;box-shadow:0 0 10px #ef2b2d;animation:bootProgress 3s cubic-bezier(.2,.65,.25,1) forwards;}"
+            . "@keyframes bootProgress{0%{width:0}18%{width:14%}48%{width:55%}78%{width:82%}100%{width:100%}}"
+            . "</style></head><body><div class='stage'><img class='art' src='" imageUri "'>"
+            . "<div class='boot'><div class='signal'></div><div class='copy'><div class='title'>Ultimate Macro — Kronox's Edition</div>"
+            . "<div class='meta'>LOADING STRATEGIES · CONNECTING SERVICES</div></div><div class='version'>" ver "</div><div class='rail'><div class='fill'></div></div></div></div></body></html>"
+        StartupSplashBrowser.Document.Open()
+        StartupSplashBrowser.Document.Write(html)
+        StartupSplashBrowser.Document.Close()
+        StartupSplashGui.Show("w784 h442 Center NoActivate")
+        return true
+    } catch Error as err {
+        try StartupSplashGui.Destroy()
+        StartupSplashGui := 0
+        StartupSplashBrowser := 0
+        try {
+            StartupSplashGui := Gui("+AlwaysOnTop -Caption +ToolWindow", "Kronox Edition is starting")
+            StartupSplashGui.BackColor := "100C0E"
+            StartupSplashGui.Add("Picture", "x0 y0 w784 h442", splashPath)
+            StartupSplashGui.Show("w784 h442 Center NoActivate")
+            return true
+        } catch Error {
+            StartupSplashGui := 0
+            return false
+        }
+    }
+}
+
+FinishStartupSplash(minimumVisibleMs := 3000) {
+    global StartupSplashGui, StartupSplashBrowser, StartupSplashStartTick
+
+    if !IsObject(StartupSplashGui)
+        return
+    remaining := minimumVisibleMs - (A_TickCount - StartupSplashStartTick)
+    if (remaining > 0)
+        Sleep(remaining)
+    try StartupSplashBrowser.Stop()
+    try StartupSplashGui.Destroy()
+    StartupSplashGui := 0
+    StartupSplashBrowser := 0
+}
+
 A_MaxHotkeysPerInterval := 9999
 
 pToken := Gdip_Startup()
 OnExit(CleanupGdip)
 OnExit(HandleExit)
+ShowStartupSplash()
 
 global AppDataOpt := A_AppData "\Ultimate_Macro\Options"
 global SettingsFile := AppDataOpt "\Settings.tds"
@@ -292,6 +369,7 @@ global StrategyWidth := 1920
 global StrategyHeight := 1090
 global CloneFailurePolicy := ""
 global EngineerCloneMaxAttempts := 3
+global CloneRetryDelayMs := 5000
 
 global Slots := [
     ScaleX(800) ", " ScaleY(960), 
@@ -346,7 +424,7 @@ global StrategyHotbarSlotMap := Map(), StrategyHotbarRemapSummary := ""
 global autoChain := "OFF", autoCaravan := "OFF", autoDropTheBeat := "OFF"
 global Commander := false, AutoSkip := "ON", AbilitySpam := "ON"
 global AdvancedAutoSkip := "OFF", AdvancedSkipWaves := "", AdvancedSkipWaveSet := Map()
-global AdvancedLastSkippedWave := 0
+global AdvancedLastSkippedWave := 0, AdvancedPendingSkipWave := 0
 global AutoSkipStopWave := 0, AutoSkipSuccessfulCount := 0
 global AutoSkipLastDetectedWave := 0, AutoSkipBlockLogged := false
 
@@ -1592,43 +1670,43 @@ Tab5_Help7.OnEvent("Click", HelpCheckTheMap)
 global UseNumbersForHotbarCtrl := MainGui.Add("Checkbox", "x310 y235 Hidden", "Use Numbers for Hotbar")
 UseNumbersForHotbarCtrl.Value := (UseNumbersForHotbar = "1" || UseNumbersForHotbar = 1)
 
-global CollectPlaytimeRewardsCtrl := MainGui.Add("Checkbox", "x510 y185 Hidden", "Collect playtime rewards")
+global CollectPlaytimeRewardsCtrl := MainGui.Add("Checkbox", "x520 y185 w150 Hidden", "Collect playtime rewards")
 CollectPlaytimeRewardsCtrl.Value := (CollectPlaytimeRewards = "1" || CollectPlaytimeRewards = 1)
 
-global DebugConsoleCtrl := MainGui.Add("Checkbox", "x570 y135 Hidden", "Debug Logs")
+global DebugConsoleCtrl := MainGui.Add("Checkbox", "x520 y135 w130 Hidden", "Debug Logs")
 DebugConsoleCtrl.Value := (DebugConsole = "1" || DebugConsole = 1)
 
-global PotatoModeCtrl := MainGui.Add("Checkbox", "x570 y160 Hidden", "Potato Mode")
+global PotatoModeCtrl := MainGui.Add("Checkbox", "x520 y160 w130 Hidden", "Potato Mode")
 PotatoModeCtrl.Value := (PotatoMode = 1)
 
-global LegacyModeCtrl := MainGui.Add("Checkbox", "x510 y245 Hidden", "Legacy image mode")
+global LegacyModeCtrl := MainGui.Add("Checkbox", "x520 y210 w150 Hidden", "Legacy image mode")
 LegacyModeCtrl.Value := (LegacyMode = "1" || LegacyMode = 1)
 LegacyModeCtrl.OnEvent("Click", LegacyModeInfo)
 
 MainGui.SetFont("s9 w400 cFFFFFF")
-global UpgradeDelayLbl := MainGui.Add("Text", "x468 y238 w100 h20 Hidden BackgroundTrans", "Upgrade delay:")
-global UpgradeDelayCtrl := MainGui.Add("Edit", "x570 y234 w58 h22 Center Number Limit4 Hidden", UpgradeDelay)
-global UpgradeDelayUnitLbl := MainGui.Add("Text", "x632 y238 w40 h20 Hidden BackgroundTrans", "ms")
+global UpgradeDelayLbl := MainGui.Add("Text", "x310 y264 w94 h20 Hidden BackgroundTrans", "Upgrade delay:")
+global UpgradeDelayCtrl := MainGui.Add("Edit", "x405 y260 w58 h22 Center Number Limit4 Hidden", UpgradeDelay)
+global UpgradeDelayUnitLbl := MainGui.Add("Text", "x468 y264 w28 h20 Hidden BackgroundTrans", "ms")
 
 MainGui.SetFont("s9 w400 cB79AA0")
-global Tab1_Lbl3 := MainGui.Add("Text", "x530 y220 w100 h20 Hidden BackgroundTrans", "Timescale:")
+global Tab1_Lbl3 := MainGui.Add("Text", "x520 y238 w65 h20 Hidden BackgroundTrans", "Timescale:")
 MainGui.SetFont("s9 w400 cFFFFFF")
-global TimeScaleModeCtrl := MainGui.Add("DropDownList", "x595 y216 w80 Hidden", ["OFF","1.5x","2x"])
+global TimeScaleModeCtrl := MainGui.Add("DropDownList", "x590 y234 w80 Hidden", ["OFF","1.5x","2x"])
 TimeScaleModeCtrl.Text := TimeScaleMode
 
 MainGui.SetFont("s9 w400 cFFFFFF")
-global MouseSpeedLbl := MainGui.Add("Text", "x310 y270 w110 h20 Hidden BackgroundTrans", "Mouse Speed:")
-global MouseSpeedTxt := MainGui.Add("Text", "x389 y270 w26 Hidden", DefaultMouseSpeed)
+global MouseSpeedLbl := MainGui.Add("Text", "x310 y292 w82 h20 Hidden BackgroundTrans", "Mouse Speed:")
+global MouseSpeedTxt := MainGui.Add("Text", "x392 y292 w26 Hidden", DefaultMouseSpeed)
 global MouseSpeedUpDown := MainGui.Add("UpDown", "Range1-3 Hidden", DefaultMouseSpeed)
 MouseSpeedUpDown.OnEvent("Change", (ctrl, *) => MouseSpeedTxt.Value := ctrl.Value)
 
-global MouseDelayLbl := MainGui.Add("Text", "x435 y270 w90 h20 Hidden BackgroundTrans", "Mouse Delay:")
-global MouseDelayTxt := MainGui.Add("Text", "x509 y270 w32 Hidden", MouseDelay)
+global MouseDelayLbl := MainGui.Add("Text", "x435 y292 w76 h20 Hidden BackgroundTrans", "Mouse Delay:")
+global MouseDelayTxt := MainGui.Add("Text", "x512 y292 w32 Hidden", MouseDelay)
 global MouseDelayUpDown := MainGui.Add("UpDown", "Range3-75 Hidden", MouseDelay)
 MouseDelayUpDown.OnEvent("Change", (ctrl, *) => MouseDelayTxt.Value := ctrl.Value)
 
-global KeyDelayLbl := MainGui.Add("Text", "x565 y270 w90 h20 Hidden BackgroundTrans", "Key Delay:")
-global KeyDelayTxt := MainGui.Add("Text", "x625 y270 w32 Hidden", KeyDelay)
+global KeyDelayLbl := MainGui.Add("Text", "x565 y292 w62 h20 Hidden BackgroundTrans", "Key Delay:")
+global KeyDelayTxt := MainGui.Add("Text", "x630 y292 w32 Hidden", KeyDelay)
 global KeyDelayUpDown := MainGui.Add("UpDown", "Range5-100 Hidden", KeyDelay)
 KeyDelayUpDown.OnEvent("Change", (ctrl, *) => KeyDelayTxt.Value := ctrl.Value)
 
@@ -1803,26 +1881,28 @@ global ProfilerStatusCtrl := MainGui.Add("Text", "x30 y1136 w640 h22 Hidden Back
 MainGui.SetFont("s10 w600 cEF2B2D", "Segoe UI")
 global ResourceBudgetSection := MainGui.Add("Text", "x30 y1170 w260 h22 Hidden BackgroundTrans", "Resource Budget Guard")
 global ResourceBudgetLine := MainGui.Add("Progress", "x30 y1193 w640 h1 Hidden Background43242B", 0)
+MainGui.SetFont("s8 w400 c987D83", "Segoe UI")
+global ResourceBudgetHintCtrl := MainGui.Add("Text", "x430 y1172 w240 h18 Hidden Right BackgroundTrans", "Set any limit to 0 for unlimited")
 MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
 global TimeScaleBudgetEnabledCtrl := MainGui.Add("Checkbox", "x30 y1208 w165 h22 Hidden", "Guard timescale tickets")
 TimeScaleBudgetEnabledCtrl.Value := TimeScaleBudgetEnabled
 MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
 global TicketBalanceLabelCtrl := MainGui.Add("Text", "x210 y1211 w55 h18 Hidden", "BALANCE")
 global TicketReserveLabelCtrl := MainGui.Add("Text", "x330 y1211 w55 h18 Hidden", "RESERVE")
-global TicketSessionLabelCtrl := MainGui.Add("Text", "x450 y1211 w90 h18 Hidden", "SESSION CAP (0=∞)")
+global TicketSessionLabelCtrl := MainGui.Add("Text", "x450 y1211 w85 h18 Hidden", "SESSION CAP")
 MainGui.SetFont("s8 w400 c000000", "Segoe UI")
 global TicketBalanceCtrl := MainGui.Add("Edit", "x270 y1207 w48 h22 Center Number Limit6 Hidden", TimeScaleTicketBalance)
 global TicketReserveCtrl := MainGui.Add("Edit", "x390 y1207 w48 h22 Center Number Limit6 Hidden", TimeScaleTicketReserve)
-global TicketSessionCtrl := MainGui.Add("Edit", "x550 y1207 w55 h22 Center Number Limit6 Hidden", TimeScaleTicketMaxSession)
+global TicketSessionCtrl := MainGui.Add("Edit", "x545 y1207 w60 h22 Center Number Limit6 Hidden", TimeScaleTicketMaxSession)
 MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
 global ConsumableBudgetEnabledCtrl := MainGui.Add("Checkbox", "x30 y1238 w165 h22 Hidden", "Guard consumable steps")
 ConsumableBudgetEnabledCtrl.Value := ConsumableBudgetEnabled
 MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
-global ConsumableRunLabelCtrl := MainGui.Add("Text", "x210 y1241 w105 h18 Hidden", "MAX / RUN (0=∞)")
-global ConsumableSessionLabelCtrl := MainGui.Add("Text", "x390 y1241 w125 h18 Hidden", "MAX / SESSION (0=∞)")
+global ConsumableRunLabelCtrl := MainGui.Add("Text", "x210 y1241 w85 h18 Hidden", "MAX / RUN")
+global ConsumableSessionLabelCtrl := MainGui.Add("Text", "x390 y1241 w110 h18 Hidden", "MAX / SESSION")
 MainGui.SetFont("s8 w400 c000000", "Segoe UI")
-global ConsumableRunCtrl := MainGui.Add("Edit", "x320 y1237 w48 h22 Center Number Limit4 Hidden", ConsumableMaxPerRun)
-global ConsumableSessionCtrl := MainGui.Add("Edit", "x520 y1237 w55 h22 Center Number Limit5 Hidden", ConsumableMaxPerSession)
+global ConsumableRunCtrl := MainGui.Add("Edit", "x300 y1237 w58 h22 Center Number Limit4 Hidden", ConsumableMaxPerRun)
+global ConsumableSessionCtrl := MainGui.Add("Edit", "x505 y1237 w70 h22 Center Number Limit5 Hidden", ConsumableMaxPerSession)
 
 MainGui.SetFont("s10 w600 cEF2B2D", "Segoe UI")
 global UpdateCanarySection := MainGui.Add("Text", "x30 y1278 w260 h22 Hidden BackgroundTrans", "TDS Update Canary")
@@ -1851,7 +1931,7 @@ global KronoxFeatureSettingsCtrls := [EvolutionQueueSection, EvolutionQueueLine,
     EvolutionQueueEnabledCtrl, EvolutionQueueAutoEquipCtrl, EvolutionQueueLabelCtrl,
     EvolutionQueueTowersCtrl, EvolutionQueueHelpCtrl, EvolutionQueueStatusCtrl, AnalyticsLabSection, AnalyticsLabLine,
     StrategyProfilerEnabledCtrl, WeekendXPBoostCtrl, VIPXPBoostCtrl, OtherXPBoostLabelCtrl,
-    OtherXPBoostCtrl, ProfilerStatusCtrl, ResourceBudgetSection, ResourceBudgetLine,
+    OtherXPBoostCtrl, ProfilerStatusCtrl, ResourceBudgetSection, ResourceBudgetLine, ResourceBudgetHintCtrl,
     TimeScaleBudgetEnabledCtrl, TicketBalanceLabelCtrl, TicketReserveLabelCtrl,
     TicketSessionLabelCtrl, TicketBalanceCtrl, TicketReserveCtrl, TicketSessionCtrl,
     ConsumableBudgetEnabledCtrl, ConsumableRunLabelCtrl, ConsumableSessionLabelCtrl,
@@ -2102,6 +2182,8 @@ MainGui.SetFont("s8 w600 cB79AA0", "Segoe UI")
 global Editor_AdvancedWavesLabel := MainGui.Add("Text", "x330 y495 w48 h20 Hidden 0x200", "WAVES")
 MainGui.SetFont("s8 w400 c000000", "Segoe UI")
 global Editor_AdvancedWavesCtrl := MainGui.Add("Edit", "x380 y493 w350 h22 Hidden Disabled", "")
+DllCall("SendMessage", "Ptr", Editor_AdvancedWavesCtrl.Hwnd, "UInt", 0x1501, "Ptr", 1,
+    "Str", "Examples: 1, 3, 8-12")
 Editor_AutoSkipCtrl.OnEvent("Click", EditorAutoSkipModeChanged)
 Editor_AdvancedSkipCtrl.OnEvent("Click", EditorAutoSkipModeChanged)
 
@@ -2193,11 +2275,13 @@ YoutubeImg.OnEvent("Click", YouTubeLink)
 
 MainGui.Title := "Ultimate Macro Kronox's Edition"
 CenterLegacyTabLayouts()
+OffsetSettingsContentAfter(Tab5_Section3, 56)
 InitializeSettingsScroll()
 ApplyDarkControlThemes(MainGui)
 ApplyDarkControlThemes(ChildGui)
 ApplyDarkWindowTheme(MainGui.Hwnd)
 ApplyDarkWindowTheme(ChildGui.Hwnd)
+FinishStartupSplash()
 MainGui.Show("w" MainWindowWidth " h" MainWindowHeight)
 
 if (AlwaysOnTop = 1) {
@@ -3329,6 +3413,22 @@ InitializeSettingsScroll() {
         }
     }
     SettingsScrollMax := Max(0, maxBottom - SettingsViewportBottom + 12)
+}
+
+OffsetSettingsContentAfter(firstCtrl, offsetY) {
+    global SettingsScrollableCtrls
+
+    shifting := false
+    for ctrl in SettingsScrollableCtrls {
+        if (ctrl.Hwnd = firstCtrl.Hwnd)
+            shifting := true
+        if (!shifting)
+            continue
+        try {
+            ctrl.GetPos(, &ctrlY)
+            ctrl.Move(, ctrlY + offsetY)
+        }
+    }
 }
 
 ApplySettingsScroll() {
@@ -4787,6 +4887,9 @@ StartStrategy(ctrl, *) {
     if (RunningStrategy or Recording) {
         return
     }
+    ; Starting a strategy is also a last-chance lifecycle check for the optional
+    ; Discord sidecar. The normal app-start monitor handles crashes afterward.
+    EnsureKronoxDiscordBotRunning()
     ResumeAutomationInput("strategy-start")
     g_IsFirstLaunch := Integer(IniRead(StateFile, "State", "IsFirstLaunch", 1))
 
@@ -5906,6 +6009,9 @@ SimplicityPath() {
 
 CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
     global Towers, unfocusX, unfocusY, LastOpenedTowerID, CancelPlacementKey, HologramKey, Recording,canUseAbility
+    global CloneRetryDelayMs
+
+    retryDelayText := Format("{:.2f}", CloneRetryDelayMs / 1000)
 
     if (!Towers.Has(towerID)) {
         LogToConsole("Tower " towerID " not found!")
@@ -5939,7 +6045,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
         y2 := Round(h * 0.3)
 
         if (ImageSearch(&fx,&fy,x1,y1,x2,y2, "*Trans000000 *50 " A_WorkingDir "/Resources/hologram_tower_cooldown.png") || ReadMessage(["hologram", "ability", "is on", "cooldown", "hol%ram%", "ility"])) {
-            LogToConsole("Failed to clone " towerId "! (hologram cooldown) Retrying again in 5 seconds...")
+            LogToConsole("Failed to clone " towerId "! (hologram cooldown) Retrying again in " retryDelayText " seconds...")
             KronoxProfilerRetry("CloneTower " towerId, "hologram cooldown")
             if (maxAttempts > 0 && attempts >= maxAttempts) {
                 LogToConsole("Clone " towerId " reached its " maxAttempts "-attempt limit; deferring this step.", true)
@@ -5947,7 +6053,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
                 return false
             }
             canUseAbility := true
-            Sleep 4650
+            Sleep CloneRetryDelayMs
             canUseAbility := false
             continue
         }
@@ -5970,7 +6076,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
         Sleep 350
 
         if (ImageSearch(&fx,&fy,x1,y1,x2,y2, "*Trans000000 *50 " A_WorkingDir "/Resources/no_cash_cloning.png") || ReadMessage(["don't", "have", "enough", "cash", "clone", "this"])) {
-            LogToConsole("Failed to clone " towerId "! (no cash) Retrying again in 5 seconds...")
+            LogToConsole("Failed to clone " towerId "! (no cash) Retrying again in " retryDelayText " seconds...")
             KronoxProfilerRetry("CloneTower " towerId, "not enough cash")
             if (maxAttempts > 0 && attempts >= maxAttempts) {
                 LogToConsole("Clone " towerId " reached its " maxAttempts "-attempt limit; deferring this step.", true)
@@ -5978,7 +6084,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
                 return false
             }
             canUseAbility := true
-            Sleep 4650
+            Sleep CloneRetryDelayMs
             canUseAbility := false
             continue
         }
@@ -6013,7 +6119,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
         Sleep 100
 
         if (ImageSearch(&fx,&fy,x1,y1,x2,y2, "*Trans000000 *50 " A_WorkingDir "/Resources/stunned.png") || ReadMessage(["error", "that", "cannot", "cann", "activated", "while", "stunned"],,["need", "more", "to"],"\$|\d")) {
-            LogToConsole("Failed to clone " towerId "! (hacker is stunned) Retrying again in 5 seconds...")
+            LogToConsole("Failed to clone " towerId "! (hacker is stunned) Retrying again in " retryDelayText " seconds...")
             KronoxProfilerRetry("CloneTower " towerId, "hacker stunned")
             if (maxAttempts > 0 && attempts >= maxAttempts) {
                 LogToConsole("Clone " towerId " reached its " maxAttempts "-attempt limit; deferring this step.", true)
@@ -6021,13 +6127,13 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
                 return false
             }
             canUseAbility := true
-            Sleep 4650
+            Sleep CloneRetryDelayMs
             canUseAbility := false
             continue
         }
 
         if (ImageSearch(&fx,&fy,x1,y1,x2,y2, "*Trans000000 *50 " A_WorkingDir "/Resources/cannot_place_here.png") || ReadMessage(["cannot", "here", "hereg", "herd", "her", "here!", "cann", "cannd", "he", "h", "hed"],,["need", "more", "to"],"\$|\d")) {
-            LogToConsole("Failed to clone " towerId "! (cannot place here!) Retrying again in 5 seconds...")
+            LogToConsole("Failed to clone " towerId "! (cannot place here!) Retrying again in " retryDelayText " seconds...")
             KronoxProfilerRetry("CloneTower " towerId, "cannot place here")
             if (maxAttempts > 0 && attempts >= maxAttempts) {
                 LogToConsole("Clone " towerId " reached its " maxAttempts "-attempt limit; deferring this step.", true)
@@ -6035,7 +6141,7 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
                 return false
             }
             canUseAbility := true
-            Sleep 4650
+            Sleep CloneRetryDelayMs
             canUseAbility := false
             continue
         } else {
@@ -6465,8 +6571,10 @@ SaveKronoxDiscordBotSettings(ctrl, *) {
         return
     }
 
-    StartKronoxDiscordBot()
-    ModernMsgBox("Remote Bot", "Saved. The bot is registering /help, /status, /screenshot, /start, and /stop.`n`nUse the Guild ID for immediate command registration.", "OK")
+    if StartKronoxDiscordBot()
+        ModernMsgBox("Remote Bot", "Saved and started. The slash-command bot will also start automatically with the macro and recover if its gateway process exits.`n`nUse the Guild ID for immediate command registration.", "OK")
+    else
+        ModernMsgBox("Remote Bot", "Settings were saved, but the bot could not start. Check Logs\\discord-bot.log for the exact error.", "OK", "WARNING")
 }
 
 TestKronoxDiscordBot(ctrl, *) {
@@ -6532,6 +6640,8 @@ StartKronoxDiscordBot(*) {
         return false
     }
 
+    StopOrphanedKronoxDiscordGateways()
+
     ; Never execute a command left in the queue by a crashed/reloaded macro.
     Loop Files, KronoxBotCommandQueueDir "\*.cmd", "F"
         try FileDelete(A_LoopFileFullPath)
@@ -6541,6 +6651,7 @@ StartKronoxDiscordBot(*) {
         Run(command, A_ScriptDir, "Hide", &KronoxBotGatewayPID)
         WriteRuntimeLog("DISCORD", "Started local slash-command gateway (PID " KronoxBotGatewayPID ").")
         SetTimer(ProcessKronoxDiscordCommands, 500)
+        SetTimer(EnsureKronoxDiscordBotRunning, 15000)
         return true
     } catch Error as err {
         KronoxBotGatewayPID := 0
@@ -6549,13 +6660,47 @@ StartKronoxDiscordBot(*) {
     }
 }
 
+StopOrphanedKronoxDiscordGateways() {
+    global KronoxBotGatewayScript
+
+    try {
+        for process in ComObjGet("winmgmts:").ExecQuery("SELECT ProcessId, Name, CommandLine FROM Win32_Process WHERE Name = 'powershell.exe' OR Name = 'pwsh.exe'") {
+            try {
+                commandLine := process.CommandLine
+                if (commandLine != "" && InStr(commandLine, KronoxBotGatewayScript, false)) {
+                    stalePID := Integer(process.ProcessId)
+                    process.Terminate()
+                    WriteRuntimeLog("DISCORD", "Closed orphaned remote bot gateway PID " stalePID ".", "WARN")
+                }
+            } catch Error {
+                continue
+            }
+        }
+    } catch Error as err {
+        WriteRuntimeLog("DISCORD", "Could not audit orphaned gateway processes: " err.Message, "WARN")
+    }
+}
+
 StopKronoxDiscordBot(*) {
     global KronoxBotGatewayPID
     SetTimer(ProcessKronoxDiscordCommands, 0)
+    SetTimer(EnsureKronoxDiscordBotRunning, 0)
     if (KronoxBotGatewayPID && ProcessExist(KronoxBotGatewayPID)) {
         try ProcessClose(KronoxBotGatewayPID)
     }
     KronoxBotGatewayPID := 0
+}
+
+EnsureKronoxDiscordBotRunning(*) {
+    global KronoxBotEnabled, KronoxBotGatewayPID
+
+    if !KronoxBotEnabled
+        return false
+    if (KronoxBotGatewayPID && ProcessExist(KronoxBotGatewayPID))
+        return true
+
+    WriteRuntimeLog("DISCORD", "Remote bot gateway is not running; starting it automatically.", "WARN")
+    return StartKronoxDiscordBot()
 }
 
 ; The PowerShell gateway only acknowledges Discord interactions.  Commands are
@@ -6600,11 +6745,11 @@ KronoxDispatchDiscordCommand(action, argument := "", argument2 := "") {
 
     switch action {
         case "help":
-            KronoxBotSendChannel("**Kronox Remote Bot**`n`/status — state and this-run stats`n`/health — macro phase and recovery health`n`/screenshot — current desktop view`n`/start and /stop — start or immediately stop`n`/safe-stop — finish the current match, then stop`n`/switch slot:1|2 — safely swap strategy and standard loadout`n`/queue — pending remote actions`n`/timescale mode:off|1.5x|2x — next-match session override`n`/modifiers action:set|add|remove|clear|reset names:Exploding,Speedy — next-match session override`n`/loadout — selected strategy loadout`n`/best — best recorded coin/XP map and modifier set")
+            KronoxBotSendChannel("`/status — state and this-run stats`n`/health — macro phase and recovery health`n`/screenshot — current desktop view`n`/start and /stop — start or immediately stop`n`/safe-stop — finish the current match, then stop`n`/switch slot:1|2 — safely swap strategy and standard loadout`n`/queue — pending remote actions`n`/timescale mode:off|1.5x|2x — next-match session override`n`/modifiers action:set|add|remove|clear|reset names:Exploding,Speedy — next-match session override`n`/loadout — selected strategy loadout`n`/best — best recorded coin/XP map and modifier set", "Kronox Command Center")
         case "status":
-            KronoxBotSendChannel(KronoxBotStatusMessage())
+            KronoxBotSendChannel(KronoxBotStatusMessage(), "Macro Status")
         case "health":
-            KronoxBotSendChannel(KronoxBotHealthMessage())
+            KronoxBotSendChannel(KronoxBotHealthMessage(), "System Health")
         case "screenshot":
             KronoxBotSendScreenshot("Kronox remote screenshot")
         case "start":
@@ -6629,7 +6774,7 @@ KronoxDispatchDiscordCommand(action, argument := "", argument2 := "") {
             KronoxQueueRemoteSafeStop()
             KronoxBotSendChannel("Safe stop queued. The macro will finish the current match, then stop before another match begins.")
         case "queue":
-            KronoxBotSendChannel(KronoxRemoteQueueMessage())
+            KronoxBotSendChannel(KronoxRemoteQueueMessage(), "Remote Queue")
         case "switch":
             if !RegExMatch(argument, "^[12]$") {
                 KronoxBotSendChannel("Choose a configured strategy slot: /switch slot:1 or /switch slot:2.")
@@ -6664,9 +6809,9 @@ KronoxDispatchDiscordCommand(action, argument := "", argument2 := "") {
                 KronoxBotSendChannel("Queued temporary modifiers for " timing ": **" detail "** (" modifierRequest.action "). The strategy file is unchanged.")
             }
         case "loadout":
-            KronoxBotSendChannel(KronoxBotLoadoutMessage())
+            KronoxBotSendChannel(KronoxBotLoadoutMessage(), "Selected Loadout")
         case "best":
-            KronoxBotSendChannel(KronoxBotBestMessage())
+            KronoxBotSendChannel(KronoxBotBestMessage(), "Best Recorded Efficiency")
         default:
             KronoxBotSendChannel("Unknown remote command was ignored.")
     }
@@ -7023,13 +7168,14 @@ KronoxBotEscapeJson(text) {
     return StrReplace(escaped, Chr(34), "\" Chr(34))
 }
 
-KronoxBotSendChannel(text) {
+KronoxBotSendChannel(text, title := "Kronox Remote Control") {
     global KronoxBotToken, KronoxBotChannelID
 
     if (KronoxBotToken = "" || KronoxBotChannelID = "")
         return false
     q := Chr(34)
-    payload := "{" q "content" q ":" q KronoxBotEscapeJson(text) q "," q "allowed_mentions" q ":{" q "parse" q ":[]}}"
+    timestamp := FormatTime(A_NowUTC, "yyyy-MM-ddTHH:mm:ssZ")
+    payload := "{" q "embeds" q ":[{" q "title" q ":" q KronoxBotEscapeJson(title) q "," q "description" q ":" q KronoxBotEscapeJson(text) q "," q "color" q ":15674157," q "footer" q ":{" q "text" q ":" q "Ultimate Macro Kronox's Edition • Local remote control" q "}," q "timestamp" q ":" q timestamp q "}]," q "allowed_mentions" q ":{" q "parse" q ":[]}}"
     result := KronoxDiscordBotApiRequest("POST", "channels/" KronoxBotChannelID "/messages", KronoxBotToken, payload)
     if !result.ok
         WriteRuntimeLog("DISCORD", "Could not send remote reply (HTTP " result.status ").", "WARN")
@@ -7045,7 +7191,7 @@ KronoxBotSendScreenshot(description := "Kronox remote screenshot") {
     try {
         pBitmap := Gdip_BitmapFromScreen()
         q := Chr(34)
-        payload := "{" q "content" q ":" q KronoxBotEscapeJson(description) q "," q "attachments" q ":[{" q "id" q ":0," q "filename" q ":" q "screenshot.png" q "}]}"
+        payload := "{" q "embeds" q ":[{" q "title" q ":" q "Live Macro View" q "," q "description" q ":" q KronoxBotEscapeJson(description) q "," q "color" q ":15674157," q "image" q ":{" q "url" q ":" q "attachment://screenshot.png" q "}," q "footer" q ":{" q "text" q ":" q "Ultimate Macro Kronox's Edition" q "}}]," q "attachments" q ":[{" q "id" q ":0," q "filename" q ":" q "screenshot.png" q "}]}"
         fields := [
             Map("name", "payload_json", "content-type", "application/json", "content", payload),
             Map("name", "files[0]", "filename", "screenshot.png", "content-type", "image/png", "pBitmap", pBitmap)
@@ -7535,7 +7681,7 @@ LoadStrategyFile(file) {
     global AdvancedAutoSkip, AdvancedSkipWaves, AdvancedSkipWaveSet
     global StrategyHotbarSlotMap, StrategyHotbarRemapSummary
     global modifiers, Commander, StrategyWidth, StrategyHeight
-    global CloneFailurePolicy, EngineerCloneMaxAttempts
+    global CloneFailurePolicy, EngineerCloneMaxAttempts, CloneRetryDelayMs
     global AbstractTowerSlots, AbstractTowerSlot, AbstractPlacementMax, AbstractPlacementLimit
 
     Towers := Map()
@@ -7593,6 +7739,8 @@ LoadStrategyFile(file) {
     CloneFailurePolicy := IniRead(file, "Settings", "cloneFailurePolicy", "")
     cloneAttemptsSetting := IniRead(file, "Settings", "engineerCloneMaxAttempts", "3")
     EngineerCloneMaxAttempts := IsNumber(cloneAttemptsSetting) ? Max(1, Integer(cloneAttemptsSetting)) : 3
+    cloneRetrySetting := IniRead(file, "Settings", "cloneRetryDelayMs", "5000")
+    CloneRetryDelayMs := IsNumber(cloneRetrySetting) ? Max(250, Min(10000, Integer(cloneRetrySetting))) : 5000
 
     moveDown := IniRead(file, "Settings", "moveDown", "false")
     tempEnabled := IniRead(file, "Settings", "moveEnabled",   "")
@@ -7863,8 +8011,8 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
 
 PlayStrategy() {
     global canUseAbility, MultiplayerEnabled, StateFile, gamemap, InputAutomationSuspended
-    global CloneFailurePolicy, EngineerCloneMaxAttempts
-    global AutoSkipSuccessfulCount, AutoSkipLastDetectedWave, AutoSkipBlockLogged, AdvancedLastSkippedWave
+    global CloneFailurePolicy, EngineerCloneMaxAttempts, CloneRetryDelayMs
+    global AutoSkipSuccessfulCount, AutoSkipLastDetectedWave, AutoSkipBlockLogged, AdvancedLastSkippedWave, AdvancedPendingSkipWave
 
     activeRunId := BeginTrackedRun()
     ResumeAutomationInput("strategy-playback")
@@ -7876,6 +8024,7 @@ PlayStrategy() {
     AutoSkipLastDetectedWave := 0
     AutoSkipBlockLogged := false
     AdvancedLastSkippedWave := 0
+    AdvancedPendingSkipWave := 0
     SetTimer(UseAbilities, 750)
     if (MultiplayerEnabled) {
         SetTimer(checkCondition, 15000)
@@ -7912,8 +8061,8 @@ PlayStrategy() {
                         break
                     }
                     KronoxProfilerRetry(step, "Required Juggernaut clone retry")
-                    LogToConsole("Required Juggernaut clone did not complete; retrying in 5 seconds...", true)
-                    Sleep(5000)
+                    LogToConsole("Required Juggernaut clone did not complete; retrying in " Format("{:.2f}", CloneRetryDelayMs / 1000) " seconds...", true)
+                    Sleep(CloneRetryDelayMs)
                 }
                 KronoxProfilerStepEnd(profileIndex, step, profileStart)
             } else {
@@ -10372,6 +10521,7 @@ UseAbilities(*) {
                 MouseGetPos(&cx, &cy)
                 Click(res.x, res.y)
                 AutoSkipSuccessfulCount++
+                ConfirmAutoSkipWave()
                 Sleep(30)
                 MouseMove(cx, cy)
                 Sleep(20)
@@ -10482,7 +10632,7 @@ UseAbilities(*) {
 ShouldAutoSkipWave() {
     global AutoSkipStopWave, AutoSkipSuccessfulCount
     global AutoSkipLastDetectedWave, AutoSkipBlockLogged
-    global AdvancedAutoSkip, AdvancedSkipWaveSet, AdvancedLastSkippedWave
+    global AdvancedAutoSkip, AdvancedSkipWaveSet, AdvancedLastSkippedWave, AdvancedPendingSkipWave
 
     if (AdvancedAutoSkip = "ON") {
         detectedWave := DetectCurrentWaveNumber()
@@ -10493,8 +10643,9 @@ ShouldAutoSkipWave() {
         if (AdvancedLastSkippedWave = detectedWave)
             return false
 
-        AdvancedLastSkippedWave := detectedWave
-        LogToConsole("Advanced Wave Skip matched wave " detectedWave ".")
+        ; Reserve the match, but only mark it complete after the skip click is
+        ; actually sent. This keeps a transient HUD/click failure retryable.
+        AdvancedPendingSkipWave := detectedWave
         return true
     }
 
@@ -10520,6 +10671,16 @@ ShouldAutoSkipWave() {
     return false
 }
 
+ConfirmAutoSkipWave() {
+    global AdvancedAutoSkip, AdvancedLastSkippedWave, AdvancedPendingSkipWave
+
+    if (AdvancedAutoSkip != "ON" || AdvancedPendingSkipWave <= 0)
+        return
+    AdvancedLastSkippedWave := AdvancedPendingSkipWave
+    AdvancedPendingSkipWave := 0
+    LogToConsole("Advanced Wave Skip completed wave " AdvancedLastSkippedWave ".")
+}
+
 DetectCurrentWaveNumber() {
     hwnd := GetRobloxHWND()
     if (!hwnd)
@@ -10532,20 +10693,35 @@ DetectCurrentWaveNumber() {
     if (clientW <= 0 || clientH <= 0)
         return 0
 
-    regionX := clientX + Round(clientW * 0.28)
-    regionY := clientY
-    regionW := Round(clientW * 0.44)
-    regionH := Round(clientH * 0.24)
+    ; The Wave HUD moves from the upper-left toward the center across Roblox
+    ; resolutions and UI scales. Search a focused left region first, followed
+    ; by a wider top-band fallback. Requiring the word Wave keeps nearby base
+    ; health, cash and timer numbers from becoming false matches.
+    regions := [
+        {x: 0.01, y: 0.00, w: 0.48, h: 0.22},
+        {x: 0.00, y: 0.00, w: 0.74, h: 0.27}
+    ]
+    for region in regions {
+        regionX := clientX + Round(clientW * region.x)
+        regionY := clientY + Round(clientH * region.y)
+        regionW := Round(clientW * region.w)
+        regionH := Round(clientH * region.h)
+        try waveText := OCR.FromRect(regionX, regionY, regionW, regionH, {lang: "en-US", scale: 2, grayscale: 1}).Text
+        catch
+            continue
+        detectedWave := ExtractWaveNumberFromHudText(waveText)
+        if (detectedWave > 0)
+            return detectedWave
+    }
 
-    try waveText := OCR.FromRect(regionX, regionY, regionW, regionH, {lang: "en-US", scale: 2, grayscale: 1}).Text
-    catch
-        return 0
+    return 0
+}
 
-    ; The HUD normally renders "Wave 39" or "Wave 39/40". Requiring the
-    ; word Wave avoids confusing the nearby base-health and timer numbers.
-    if RegExMatch(waveText, "i)\bW[A4]V[E3]\D{0,12}(\d{1,3})\b", &waveMatch)
+ExtractWaveNumberFromHudText(waveText) {
+    ; Tolerate the most common OCR substitutions without accepting a bare
+    ; number from the timer or base-health HUD.
+    if RegExMatch(waveText, "i)\bW[A4][VY][E3]?\s*[:\-]?\s*(\d{1,3})(?:\s*/\s*\d{1,3})?\b", &waveMatch)
         return Integer(waveMatch[1])
-
     return 0
 }
 

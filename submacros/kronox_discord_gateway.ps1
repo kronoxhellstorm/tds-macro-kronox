@@ -64,17 +64,37 @@ if (-not (Test-Path -LiteralPath $CommandQueuePath)) {
 }
 
 function Invoke-DiscordBotApi([string]$Method, [string]$Path, $Body = $null) {
-    $parameters = @{
-        Uri = "$ApiBase/$Path"
-        Method = $Method
-        Headers = @{ Authorization = "Bot $Token"; 'User-Agent' = 'KronoxUltimateMacro/1.3.3' }
-        UseBasicParsing = $true
+    $maxAttempts = 6
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $parameters = @{
+            Uri = "$ApiBase/$Path"
+            Method = $Method
+            Headers = @{ Authorization = "Bot $Token"; 'User-Agent' = 'KronoxUltimateMacro/1.3.3' }
+            UseBasicParsing = $true
+        }
+        if ($null -ne $Body) {
+            $parameters['ContentType'] = 'application/json'
+            $parameters['Body'] = $Body
+        }
+
+        try {
+            return Invoke-RestMethod @parameters
+        } catch {
+            $statusCode = 0
+            try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {}
+            if ($statusCode -ne 429 -or $attempt -ge $maxAttempts) { throw }
+
+            $retryAfter = 5.0
+            try {
+                $errorPayload = $_.ErrorDetails.Message | ConvertFrom-Json
+                if ($null -ne $errorPayload.retry_after) { $retryAfter = [double]$errorPayload.retry_after }
+            } catch {}
+            $retryAfter = [Math]::Max(1.0, [Math]::Min(60.0, $retryAfter))
+            Write-Log "Discord rate limit on $Method $Path; retrying in $retryAfter seconds (attempt $attempt/$maxAttempts)." 'WARN'
+            Start-Sleep -Milliseconds ([int][Math]::Ceiling($retryAfter * 1000) + 250)
+        }
     }
-    if ($null -ne $Body) {
-        $parameters['ContentType'] = 'application/json'
-        $parameters['Body'] = $Body
-    }
-    return Invoke-RestMethod @parameters
+    throw "Discord API request exhausted its retry budget: $Method $Path"
 }
 
 function Register-KronoxSlashCommands {
@@ -128,15 +148,27 @@ function Register-KronoxSlashCommands {
             @{ name = 'names'; description = 'Comma-separated, e.g. Exploding, Speedy'; type = 3; required = $false }
         ) }
     )
-    foreach ($command in $commands) {
-        Invoke-DiscordBotApi -Method 'POST' -Path $endpoint -Body ($command | ConvertTo-Json -Depth 6 -Compress) | Out-Null
-    }
+    # Bulk overwrite is one idempotent request. Registering every command with
+    # a separate POST exhausted Discord's application-command rate limit and
+    # made the gateway exit before it could ever appear online.
+    Invoke-DiscordBotApi -Method 'PUT' -Path $endpoint -Body ($commands | ConvertTo-Json -Depth 6 -Compress) | Out-Null
     [System.IO.File]::WriteAllText($stampPath, $stamp + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
     Write-Log "Registered $($commands.Count) slash commands for $scope."
 }
 
 function Send-InteractionReply($Interaction, [string]$Content) {
-    $body = @{ type = 4; data = @{ content = $Content; flags = 64 } } | ConvertTo-Json -Compress
+    $body = @{
+        type = 4
+        data = @{
+            flags = 64
+            embeds = @(@{
+                title = 'Kronox Command Queue'
+                description = $Content
+                color = 15674157
+                footer = @{ text = "Ultimate Macro Kronox's Edition - owner-only control" }
+            })
+        }
+    } | ConvertTo-Json -Depth 6 -Compress
     # Interaction callbacks authenticate with the one-time interaction token;
     # no bot credential is included in the request.
     Invoke-RestMethod -Method Post -Uri "$ApiBase/interactions/$($Interaction.id)/$($Interaction.token)/callback" -ContentType 'application/json' -Body $body -UseBasicParsing | Out-Null
@@ -267,6 +299,7 @@ function Run-DiscordGateway {
     $socket = [System.Net.WebSockets.ClientWebSocket]::new()
     try {
         $socket.ConnectAsync([Uri]($gateway.url + '/?v=10&encoding=json'), $Cancellation).GetAwaiter().GetResult()
+        Write-Log 'Discord Gateway websocket connected; identifying the bot.'
         $firstBuffer = [byte[]]::new(65536)
         $firstSegment = [System.ArraySegment[byte]]::new($firstBuffer)
         $firstTask = $socket.ReceiveAsync($firstSegment, $Cancellation)
@@ -280,7 +313,20 @@ function Run-DiscordGateway {
         $hello = $helloJson | ConvertFrom-Json
         if ($hello.op -ne 10) { throw 'Discord Gateway did not return HELLO.' }
 
-        Send-GatewayPayload $socket @{ op = 2; d = @{ token = $Token; intents = 0; properties = @{ os = 'windows'; browser = 'kronox-ultimate-macro'; device = 'kronox-ultimate-macro' } } }
+        Send-GatewayPayload $socket @{
+            op = 2
+            d = @{
+                token = $Token
+                intents = 0
+                properties = @{ os = 'windows'; browser = 'kronox-ultimate-macro'; device = 'kronox-ultimate-macro' }
+                presence = @{
+                    since = $null
+                    activities = @(@{ name = 'over Kronox Edition macro'; type = 3 })
+                    status = 'online'
+                    afk = $false
+                }
+            }
+        }
         $heartbeatMs = [int]$hello.d.heartbeat_interval
         $nextHeartbeat = [DateTime]::UtcNow.AddMilliseconds($heartbeatMs)
         $lastSequence = $null
@@ -300,6 +346,9 @@ function Run-DiscordGateway {
                 }
                 $payload = $json | ConvertFrom-Json
                 Handle-GatewayPayload $payload ([ref]$lastSequence)
+                if ($payload.op -eq 0 -and $payload.t -eq 'READY') {
+                    Write-Log 'Remote bot is online and ready for slash commands.'
+                }
                 if ($payload.op -eq 1) { Send-GatewayPayload $socket @{ op = 1; d = $lastSequence } }
                 if ($payload.op -eq 7 -or $payload.op -eq 9) { throw 'Discord requested a fresh Gateway session.' }
                 $receiveTask = $socket.ReceiveAsync($segment, $Cancellation)
@@ -316,7 +365,7 @@ function Run-DiscordGateway {
 
 try {
     Register-KronoxSlashCommands
-    Write-Log 'Local slash-command gateway connected.'
+    Write-Log 'Local slash-command gateway initialized.'
     while ($true) {
         try {
             Run-DiscordGateway

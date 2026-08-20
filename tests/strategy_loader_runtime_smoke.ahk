@@ -8,6 +8,14 @@ strategyFile := A_ScriptDir "\..\Resources\Strats\Menz's Frosted heaven.strat"
 if !FileExist(strategyFile)
     throw Error("Strategy loader fixture is missing: " strategyFile)
 
+if (Integer(IniRead(strategyFile, "Settings", "autoSkipStopWave", 0)) != 35)
+    throw Error("Menz strategy must protect wave 35 and every later wave from auto-skip.")
+if (Integer(IniRead(strategyFile, "Settings", "cloneRetryDelayMs", 0)) != 1000)
+    throw Error("Menz strategy must use the one-second endgame clone retry delay.")
+mainSource := FileRead(A_ScriptDir "\..\Main.ahk")
+if !InStr(mainSource, "Sleep CloneRetryDelayMs")
+    throw Error("CloneTower does not use the strategy-configured retry delay.")
+
 steps := []
 inSteps := false
 Loop Read, strategyFile {
@@ -42,5 +50,5 @@ Loop 1000 {
     }
 }
 
-FileAppend("PASS strategy loader runtime smoke (AutoHotkey " A_AhkVersion ")`n", "*")
+FileAppend("PASS strategy loader runtime and Menz reliability settings (AutoHotkey " A_AhkVersion ")`n", "*")
 ExitApp(0)

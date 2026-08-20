@@ -17,6 +17,8 @@ if (-not (Test-Path -LiteralPath $sidecar)) { throw "Missing Discord gateway sid
 $source = Get-Content -LiteralPath $main -Raw
 foreach ($marker in @(
     'StartKronoxDiscordBot',
+    'EnsureKronoxDiscordBotRunning',
+    'StopOrphanedKronoxDiscordGateways',
     'ProcessKronoxDiscordCommands',
     'KronoxBotSendScreenshot',
     'KronoxQueueRemoteStrategySwitch',
@@ -24,6 +26,8 @@ foreach ($marker in @(
     'KronoxQueueRemoteTimeScale',
     'KronoxQueueRemoteModifiers',
     'KronoxBotBestMessage',
+    'KronoxBotSendChannel(text, title := "Kronox Remote Control")',
+    '"embeds"',
     'Kronox-Discord-Bot.ini'
 )) {
     if ($source.IndexOf($marker, [System.StringComparison]::Ordinal) -lt 0) {
@@ -36,5 +40,16 @@ foreach ($command in @('switch', 'safe-stop', 'timescale', 'modifiers', 'loadout
         throw "Discord gateway does not register the /$command command."
     }
 }
+if ($gatewaySource.IndexOf("Invoke-DiscordBotApi -Method 'PUT'", [System.StringComparison]::Ordinal) -lt 0) {
+    throw 'Discord gateway does not bulk-register slash commands.'
+}
+if ($gatewaySource.IndexOf('Discord rate limit on', [System.StringComparison]::Ordinal) -lt 0) {
+    throw 'Discord gateway does not back off after HTTP 429 responses.'
+}
+foreach ($marker in @("title = 'Kronox Command Queue'", "name = 'over Kronox Edition macro'", 'type = 3')) {
+    if ($gatewaySource.IndexOf($marker, [System.StringComparison]::Ordinal) -lt 0) {
+        throw "Discord gateway is missing presentation marker: $marker"
+    }
+}
 
-Write-Output 'PASS: Discord remote bot sidecar parses and its Main.ahk integration markers are present.'
+Write-Output 'PASS: Discord remote bot parses, uses branded embeds and Watching presence, bulk-registers commands, backs off on rate limits, and is lifecycle-monitored by Main.ahk.'

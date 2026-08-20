@@ -7,13 +7,14 @@ autoChain=OFF
 autoCaravan=OFF
 autoDropTheBeat=ON
 autoSkip=ON
-autoSkipStopWave=39
+autoSkipStopWave=35
 abilitySpam=ON
 moveEnabled=0
 moveDirection=W
 moveDuration=5000
 cloneFailurePolicy=deferEngineerRequireJuggernaut
 engineerCloneMaxAttempts=3
+cloneRetryDelayMs=1000
 
 [DO NOT EDIT]
 width=1920
