@@ -6,7 +6,7 @@
 
 ; this library is for ImageSearch. it uses image_search.dll, which utilizes opencv to search for images and return a score. this dll and this lib make it possible to support any screen resolution.
 ; also, If the dll call fails, it falls back to Gdip_ImageSearch.
-AdvImageSearch(templatePath, ax := 0, ay := 0, aw := 0, ah := 0, minScale := 0.0, maxScale := 0.0, scaleStep := 0.05) {
+KronoxNativeImageSearch(templatePath, ax := 0, ay := 0, aw := 0, ah := 0, minScale := 0.0, maxScale := 0.0, scaleStep := 0.05) {
     static hOpenCV := 0
     static hModule := 0
     static isInitialized := false
@@ -196,4 +196,29 @@ AdvImageSearch(templatePath, ax := 0, ay := 0, aw := 0, ah := 0, minScale := 0.0
     }
     
     return {status: "error", message: "Unknown error occurred", score: 0}
+}
+
+; Kronox compatibility layer: Legacy Mode intentionally uses the stock matcher
+; for players whose OpenCV path cannot detect their UI. It is 1920x1080-only by
+; design, so the caller receives the same result shape as the advanced matcher.
+AdvImageSearch(templatePath, ax := 0, ay := 0, aw := 0, ah := 0, minScale := 0.0, maxScale := 0.0, scaleStep := 0.05) {
+    global LegacyMode
+    legacyEnabled := false
+    try legacyEnabled := IsSet(LegacyMode) && (LegacyMode = 1 || LegacyMode = "1")
+
+    if !legacyEnabled
+        return KronoxNativeImageSearch(templatePath, ax, ay, aw, ah, minScale, maxScale, scaleStep)
+
+    searchRight := (aw = 0) ? A_ScreenWidth : ax + aw
+    searchBottom := (ah = 0) ? A_ScreenHeight : ay + ah
+    foundX := 0
+    foundY := 0
+    try found := ImageSearch(&foundX, &foundY, ax, ay, searchRight, searchBottom, "*80 " templatePath)
+    catch Error as err
+        return {status: "error", message: "Legacy ImageSearch failed: " err.Message, score: 0, x: 0, y: 0, w: 0, h: 0, scale: 1.0}
+
+    if found
+        return {status: "success", message: "legacy ImageSearch", score: 1.0, x: foundX, y: foundY, w: 0, h: 0, scale: 1.0}
+
+    return {status: "error", message: "not found via legacy ImageSearch", score: 0, x: 0, y: 0, w: 0, h: 0, scale: 1.0}
 }

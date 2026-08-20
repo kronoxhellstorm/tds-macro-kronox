@@ -647,7 +647,7 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     try KronoxProfilerRecordResult(StrategyProfileFile, StateFile, activeRunId, matchResult)
     try KronoxAppendRunContextEvent(RunContextFile, activeRunId, "RESULT", activeXPBoostProfile,
         activeXPBoostFactor, activeModifierDisplay, KronoxModifierMultiplier(activeModifiers),
-        IniRead(SettingsFile, "Options", "TimeScaleMode", "OFF"), activeTDSVersion, activeCanaryStatus)
+        IniRead(StateFile, "State", "ActiveTimeScaleMode", IniRead(SettingsFile, "Options", "TimeScaleMode", "OFF")), activeTDSVersion, activeCanaryStatus)
     canaryResult := KronoxCanaryRecordResult(SettingsFile, StateFile, matchResult)
 
     IniWrite(matchResult, StateFile, "State", "LastResult")
@@ -660,7 +660,7 @@ SendInfo(matchResult := "", detectionSource := "result-screen") {
     IniDelete(StateFile, "State", "TimeWhenStartedPlaying")
     for key in ["ActiveRunId", "ActiveRunStartedAt", "ActiveRunStartedTick", "ActiveStrategyPath",
         "ActiveStrategyName", "ActiveStrategyFingerprint", "ActiveStrategyDisplay", "ActiveMap",
-        "ActiveMode", "ActiveModifiers", "ActiveModifierDisplay", "ActiveXPBoostProfile", "ActiveXPBoostFactor"]
+        "ActiveMode", "ActiveModifiers", "ActiveModifierDisplay", "ActiveXPBoostProfile", "ActiveXPBoostFactor", "ActiveTimeScaleMode"]
         try IniDelete(StateFile, "State", key)
     try IniDelete(StateFile, "State", "ResultClaimedRunId")
     try IniDelete(StateFile, "State", "ResultClaimedAt")

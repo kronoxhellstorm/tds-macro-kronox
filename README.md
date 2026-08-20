@@ -23,6 +23,7 @@ Kronox's Edition is an analytics- and strategy-development-focused fork of **Ult
 * **Native Crash Recovery** - If the main AutoHotkey process disappears during a persisted run, the watchdog releases input, cleanly restarts Roblox, and relaunches the strategy instead of silently exiting.
 * **Hardened Runtime Startup** - Embedded restart runtimes use AutoHotkey 2.0.19 or newer, and replacement processes are supervised through startup with bounded retries and a safe idle fallback.
 * **SWAT Van Ability Keybind** - Configure Enforcer's SWAT Van key under TDS Keybinds and call it from a strategy with `ActivateSwatVan()` or `ActivateSwatVan(waitMs)`.
+* **Owner-Only Discord Slash Remote** - Optional local Gateway sidecar exposes safe macro controls, live health and analytics, queued strategy swaps, plus temporary per-session timescale and modifier overrides; it is disabled by default and never accepts legacy `!prefix` commands.
 * **Fork-Safe Updates** - Update checks use only the Kronox Edition repository. New releases always produce an in-app notification; packaged releases can install automatically after creating a backup, while Git working copies remain notification-only.
 
 ## Original project
@@ -77,6 +78,18 @@ The macro checks the latest release from this repository when it starts outside 
 * The release-package workflow builds and attaches the required ZIP and SHA-256 checksum. Automatic packaging can be enabled with the repository Actions variable `ENABLE_AUTOMATIC_RELEASE_PACKAGES=true`.
 
 > **One-time updater migration:** `1.3.2a-kronox.4` still contains the inherited destructive updater. Publish `.5` without an attached ZIP and ask existing users to install it manually. After users have moved to `.5`, enable automatic release packages for later versions.
+
+## Discord slash-command remote
+
+The existing **Discord Webhook** view still handles logs, result reports, and automatic screenshots. Click **Remote Bot** on that page to configure the separate optional control bot. It is off by default and remains completely inactive until enabled and saved.
+
+1. Create a Discord application and bot, then invite it to your server with the `bot` and `applications.commands` scopes.
+2. In Discord Developer Mode, copy the bot's **Application ID**, your **Owner Discord user ID**, the response **Channel ID**, and—recommended—the server **Guild ID**.
+3. Enter the bot token and those IDs in **Webhook > Remote Bot**, enable the bot, then select **Save + start remote bot**.
+
+The bot registers `/help`, `/status`, `/health`, `/screenshot`, `/start`, `/stop`, `/safe-stop`, `/queue`, `/switch`, `/timescale`, `/modifiers`, `/loadout`, and `/best`. `/switch slot:1|2` accepts only the two configured Main-tab strategy slots, saves the exact requested file, and applies it only at the next safe run boundary (or the next `/start` if idle). It automatically equips ordinary tower loadouts; Abstract XP strategies preserve their protected equipped tower slots. `/timescale mode:off|1.5x|2x` and `/modifiers action:set|add|remove|clear|reset names:Exploding,Speedy` are temporary next-match overrides: they do not edit the selected strategy file or the user's saved Settings. `/safe-stop` finishes the active match and stops before the next one. Only the configured Owner ID is authorized; all other callers receive an ephemeral denial and no macro command is written locally. The configured channel needs **View Channel**, **Send Messages**, and **Attach Files** permission for screenshots.
+
+Use a Guild ID while developing because guild commands register immediately. Without one, Discord creates global commands, which may take time to appear. Leave the Discord Developer Portal's **Interactions Endpoint URL** blank: this edition receives `INTERACTION_CREATE` through a local Gateway sidecar and responds through Discord's interaction callback API. The token is stored locally in `%APPDATA%\Ultimate_Macro\Options\Kronox-Discord-Bot.ini`; never share it or commit that file.
 
 ## Abstract XP tower slots
 

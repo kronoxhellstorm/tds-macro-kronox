@@ -43,7 +43,7 @@ if (A_PtrSize == 4) {
 #Include "%A_ScriptDir%\lib\KronoxFeatures.ahk"
 #Include "%A_ScriptDir%\submacros\updater.ahk"
 
-ver := "1.3.2a-kronox.8"
+ver := "1.3.3-kronox.10"
 ; Kronox's Edition checks only its own releases and never falls back to upstream builds.
 global ForkUpdateRepository := "kronoxhellstorm/tds-macro-kronox"
 
@@ -153,6 +153,8 @@ OnExit(HandleExit)
 
 global AppDataOpt := A_AppData "\Ultimate_Macro\Options"
 global SettingsFile := AppDataOpt "\Settings.tds"
+global KronoxBotSettingsFile := AppDataOpt "\Kronox-Discord-Bot.ini"
+global KronoxBotCommandQueueDir := AppDataOpt "\Kronox-Discord-Commands"
 global RecordingsDir := A_AppData "\Ultimate_Macro\Recordings"
 global StateFile := A_AppData "\Ultimate_Macro\state.ini"
 global OverallStatsFile := A_AppData "\Ultimate_Macro\overall_stats.ini"
@@ -160,6 +162,10 @@ global RunLedgerFile := A_AppData "\Ultimate_Macro\run_ledger.csv"
 global RunContextFile := A_AppData "\Ultimate_Macro\run_context.csv"
 global StrategyProfileFile := A_AppData "\Ultimate_Macro\strategy_profiles.csv"
 global RuntimeLogDir := A_AppData "\Ultimate_Macro\Logs"
+global KronoxBotRuntimeLogFile := RuntimeLogDir "\discord-bot.log"
+global KronoxBotGatewayScript := A_ScriptDir "\submacros\kronox_discord_gateway.ps1"
+global KronoxBotGatewayPID := 0
+global DiscordRemoteView := "Webhook"
 
 global StratsDir := A_WorkingDir "\Resources\Strats"
 
@@ -177,6 +183,8 @@ if !DirExist(RecordingsDir)
     DirCreate(RecordingsDir)
 if !DirExist(RuntimeLogDir)
     DirCreate(RuntimeLogDir)
+if !DirExist(KronoxBotCommandQueueDir)
+    DirCreate(KronoxBotCommandQueueDir)
 
 OnError(HandleRuntimeError)
 WriteRuntimeLog("MAIN", "Macro process started (PID " DllCall("GetCurrentProcessId") ").")
@@ -191,11 +199,21 @@ global WebhookLink := IniRead(SettingsFile, "Webhook", "Link", "")
 global WebhookLink2 := IniRead(SettingsFile, "Webhook", "Link2", "")
 global WebhookEnabled := IniRead(SettingsFile, "Webhook", "Enabled", "0")
 global PotatoMode := IniRead(SettingsFile, "Options", "PotatoMode", 0)
+global LegacyMode := IniRead(SettingsFile, "Options", "LegacyMode", 0)
+global UpgradeDelay := Max(50, Min(2000, Integer(IniRead(SettingsFile, "Options", "UpgradeDelay", 190))))
 global SendCurrenciesEnabled := IniRead(SettingsFile, "Webhook", "SendCurrencies", "1")
 global WebhookDebugLogs := IniRead(SettingsFile, "Webhook", "WebhookDebugLogs", "1")
 global WebhookScreenshots := IniRead(SettingsFile, "Webhook", "WebhookScreenshots", "1")
 global WebhookTriumphScreenshots := IniRead(SettingsFile, "Webhook", "WebhookTriumphScreenshots", 1)
 global WebhookSepatateTriumphScreenshots := IniRead(SettingsFile, "Webhook", "WebhookSepatateTriumphScreenshots", 0)
+; Remote control is intentionally opt-in. The token stays in a separate local
+; settings file so normal webhook settings never enable a bot accidentally.
+global KronoxBotEnabled := Integer(IniRead(KronoxBotSettingsFile, "Settings", "Enabled", 0))
+global KronoxBotToken := IniRead(KronoxBotSettingsFile, "Token", "BotToken", "")
+global KronoxBotApplicationID := IniRead(KronoxBotSettingsFile, "Settings", "ApplicationID", "")
+global KronoxBotChannelID := IniRead(KronoxBotSettingsFile, "Settings", "ChannelID", "")
+global KronoxBotGuildID := IniRead(KronoxBotSettingsFile, "Settings", "GuildID", "")
+global KronoxBotOwnerUserID := IniRead(KronoxBotSettingsFile, "Settings", "OwnerUserID", "")
 global UseRestartBtn := IniRead(SettingsFile, "Options", "UseRestartBtn", "1")
 global UsePlayAgainBtn := IniRead(SettingsFile, "Options", "UsePlayAgainBtn", "1")
 global RotateStrategies := IniRead(SettingsFile, "Options", "RotateStrategies", 0)
@@ -244,6 +262,7 @@ global DeleteTowerRecordingKey := IniRead(SettingsFile, "RecordingHotkeys", "Del
 global RecordInputsKey := IniRead(SettingsFile, "RecordingHotkeys", "RecordInputsKey", "^+e")
 global HoloKey := IniRead(SettingsFile, "RecordingHotkeys", "HoloKey", "^!h")
 global UseRaiseDeadKey := IniRead(SettingsFile, "RecordingHotkeys", "RaiseDeadKey", "^vkC0")
+global ChangeTargetsKey := IniRead(SettingsFile, "RecordingHotkeys", "ChangeTargetsKey", "^!y")
 
 global CurrentStratStartTime := Integer(IniRead(StateFile, "State", "CurrentStratStartTime", "0"))
 global CurrentRotationIndex := Integer(IniRead(StateFile, "State", "CurrentRotationIndex", "1"))
@@ -453,13 +472,22 @@ if (UseRaiseDeadKey = "") {
     IniWrite("^vkC0", SettingsFile, "RecordingHotkeys", "RaiseDeadKey")
     global UseRaiseDeadKey := IniRead(SettingsFile, "RecordingHotkeys", "RaiseDeadKey", "^vkC0")
 }
+if (ChangeTargetsKey = "") {
+    IniWrite("^!y", SettingsFile, "RecordingHotkeys", "ChangeTargetsKey")
+    global ChangeTargetsKey := IniRead(SettingsFile, "RecordingHotkeys", "ChangeTargetsKey", "^!y")
+}
+if IsTowerHotbarToggleKeySpec(ChangeTargetsKey) {
+    ChangeTargetsKey := "^!y"
+    IniWrite(ChangeTargetsKey, SettingsFile, "RecordingHotkeys", "ChangeTargetsKey")
+    WriteRuntimeLog("HOTBAR", "Migrated the unsafe Change Targets shortcut away from T to Ctrl+Alt+Y.", "WARN")
+}
 
 RegisterRecordingHotkeys()
 RegisterTowerHotbarProtection()
 
 ;Got this from someone on a Discord server
 RegisterRecordingHotkeys(oldKeys := "") {
-    global PlaceTowerKey, UpgradeTowerKey, ChangeDJTrackKey, DeleteTowerRecordingKey, IsRecordingActive
+    global PlaceTowerKey, UpgradeTowerKey, ChangeDJTrackKey, DeleteTowerRecordingKey, ChangeTargetsKey, IsRecordingActive
     global SellTowerKey, AlignCameraKey, RecordInputsKey, HoloKey, UseRaiseDeadKey, RepoKey, UpgradeTowerGKey
 
     HotIf(IsRecordingActive)
@@ -475,6 +503,7 @@ RegisterRecordingHotkeys(oldKeys := "") {
     Hotkey(PlaceTowerKey, PlaceTowerHK, "On")
     Hotkey(UpgradeTowerKey, UpgradeTowerHK, "On")
     Hotkey(ChangeDJTrackKey, ChangeDJTrackHK, "On")
+    Hotkey(ChangeTargetsKey, ChangeTargetsHK, "On")
     Hotkey(DeleteTowerRecordingKey, DeleteTowerRecordingHK, "On")
     Hotkey(SellTowerKey, SellTowerHK, "On")
     Hotkey(AlignCameraKey, AlignCameraHK, "On")
@@ -808,6 +837,18 @@ savedStartTime := IniRead(StateFile, "State", "StartTime", 0)
 if (savedStartTime != 0)
     AutorunStartTime := Integer(savedStartTime)
 
+if (autoRun = 1) {
+    if KronoxConsumeRemoteSafeStop() {
+        autoRun := 0
+        IniWrite(0, StateFile, "State", "Running")
+        WriteRuntimeLog("DISCORD", "Remote safe stop prevented automatic launch of another match.")
+    } else {
+        queuedRemoteStrategy := ""
+        if ConsumeKronoxRemoteStrategySwitch(&queuedRemoteStrategy)
+            autoStrat := queuedRemoteStrategy
+    }
+}
+
 if (autoRun = 1 && autoStrat != "" && FileExist(autoStrat)) {
     WriteRuntimeLog("MAIN", "Automatic resume is loading strategy: " autoStrat ".")
     LoadStrategyFile(autoStrat)
@@ -947,7 +988,7 @@ HoverEffect_btns.Push(Tab1_Btn3)
 HoverEffect_btns.Push(Tab1_Btn4) 
 
 MainGui.SetFont("s9 w400 c" ThemeColor("TextPrimary"))
-global RotateStrategiesCtrl := MainGui.Add("Checkbox", "x30 y190 vRotateStrategies 0x200 Checked" RotateStrategies, "Strategy Rotation")
+global RotateStrategiesCtrl := MainGui.Add("Checkbox", "x30 y190 w150 h22 vRotateStrategies Checked" RotateStrategies, "Strategy Rotation")
 RotateStrategiesCtrl.OnEvent("Click", EnableStratRotation)
 
 MainGui.SetFont("s9 w400 c" ThemeColor("TextSecondary"))
@@ -971,7 +1012,7 @@ SwapUnitCtrl.OnEvent("Change", (*) => (
 ))
 
 MainGui.SetFont("s9 w400 c" ThemeColor("TextPrimary"))
-global AutoEquipCtrl := MainGui.Add("Checkbox", "x357 y190 vAutoEquip 0x200 Checked" AutoEquip, "Auto Equip Towers")
+global AutoEquipCtrl := MainGui.Add("Checkbox", "x205 y190 w160 h22 vAutoEquip Checked" AutoEquip, "Auto Equip Towers")
 AutoEquipCtrl.OnEvent("Click", EnableAutoEquip)
 
 MainGui.SetFont("s9 w400 c" ThemeColor("TextSecondary"))
@@ -1275,6 +1316,7 @@ global RecAutoDropCtrl := MainGui.Add("Checkbox", "x360 y300 Hidden vRecAutoDrop
 MainGui.Add("Progress", "x360 y325 w320 h1 Hidden Background43242B vTab2_Line3", 0)
 global Tab2_Line3 := MainGui["Tab2_Line3"]
 global RecAutoSkipCtrl := MainGui.Add("Checkbox", "x360 y338 h20 Hidden vRecAutoSkip", "Auto Skip Waves")
+RecAutoSkipCtrl.OnEvent("Click", RecordToggleAutoskip)
 global RecAbilitySpamCtrl := MainGui.Add("Checkbox", "x490 y338 h20 Hidden vRecAbilitySpam", "Abilities Spam")
 global RecAbstractSlotEnabledCtrl := MainGui.Add("Checkbox", "x360 y363 h20 Hidden vRecAbstractSlotEnabled", "Abstract XP towers")
 RecAbstractSlotEnabledCtrl.OnEvent("Click", UpdateRecAbstractSlotControls)
@@ -1380,6 +1422,9 @@ TAB3.Push(Tab3_Title, Tab3_Line1, Tab3_HostNm, Tab3_HostNm_EDIT, Tab3_PartyMemb,
 MainGui.SetFont("s10 w600 cEF2B2D", "Segoe UI")
 global Tab4_Title := MainGui.Add("Text", "x30 y95  w200 h22 Hidden", "Discord Webhook")
 global Tab4_Line1 := MainGui.Add("Progress", "x30 y118 w640 h1  Hidden Background43242B", 0)
+global Tab4_ModeSwitch := MainGui.Add("Text", "x525 y94 w145 h24 Center Background120B0D +Border 0x200 Hidden", "Remote Bot")
+Tab4_ModeSwitch.OnEvent("Click", SwitchDiscordRemoteView)
+HoverEffect_btns.Push(Tab4_ModeSwitch)
 MainGui.SetFont("s9 w400 cB79AA0")
 MainGui.Add("Text", "x30 y135 w200 h20 Hidden vTab4_Lbl1", "Webhook URL:")
 global Tab4_Lbl1 := MainGui["Tab4_Lbl1"]
@@ -1411,6 +1456,52 @@ SetButtonRole(Tab4_Btn2, "Primary")
 
 HoverEffect_btns.Push(Tab4_Btn1) 
 HoverEffect_btns.Push(Tab4_Btn2) 
+
+; Optional Discord remote bot. It is disabled by default and uses Discord slash
+; commands via the bundled local gateway sidecar; it does not share webhook state.
+MainGui.SetFont("s9 w400 cB79AA0")
+global Tab4_BotTokenLabel := MainGui.Add("Text", "x30 y135 w240 h20 Hidden", "Bot token (stored locally):")
+MainGui.SetFont("s9 w400 cFFFFFF")
+global Tab4_BotTokenCtrl := MainGui.Add("Edit", "x30 y155 w640 h24 Password Hidden vKronoxBotToken", KronoxBotToken)
+global Tab4_BotEnabledCtrl := MainGui.Add("Checkbox", "x30 y195 Hidden vKronoxBotEnabled", "Enable slash-command remote bot")
+Tab4_BotEnabledCtrl.Value := KronoxBotEnabled
+
+MainGui.SetFont("s9 w400 cB79AA0")
+global Tab4_BotApplicationLabel := MainGui.Add("Text", "x30 y225 w250 h20 Hidden", "Application ID:")
+global Tab4_BotOwnerLabel := MainGui.Add("Text", "x360 y225 w280 h20 Hidden", "Owner Discord user ID:")
+MainGui.SetFont("s9 w400 cFFFFFF")
+global Tab4_BotApplicationCtrl := MainGui.Add("Edit", "x30 y245 w300 h24 Hidden vKronoxBotApplicationID", KronoxBotApplicationID)
+global Tab4_BotOwnerCtrl := MainGui.Add("Edit", "x360 y245 w310 h24 Hidden vKronoxBotOwnerUserID", KronoxBotOwnerUserID)
+
+MainGui.SetFont("s9 w400 cB79AA0")
+global Tab4_BotChannelLabel := MainGui.Add("Text", "x30 y285 w270 h20 Hidden", "Command response channel ID:")
+global Tab4_BotGuildLabel := MainGui.Add("Text", "x360 y285 w310 h20 Hidden", "Guild/server ID (recommended):")
+MainGui.SetFont("s9 w400 cFFFFFF")
+global Tab4_BotChannelCtrl := MainGui.Add("Edit", "x30 y305 w300 h24 Hidden vKronoxBotChannelID", KronoxBotChannelID)
+global Tab4_BotGuildCtrl := MainGui.Add("Edit", "x360 y305 w310 h24 Hidden vKronoxBotGuildID", KronoxBotGuildID)
+global Tab4_BotInfo := MainGui.Add("Text", "x30 y350 w640 h145 Hidden BackgroundTrans",
+    "Status: /status, /health, /screenshot    Control: /start, /stop, /safe-stop, /queue`n"
+    . "Strategy: /switch slot:1 or slot:2, /loadout, /best — switches only at a safe run boundary; Abstract slots stay protected.`n"
+    . "Next match only: /timescale mode:off|1.5x|2x, /modifiers action:set|add|remove|clear|reset names:Exploding,Speedy`n"
+    . "Setup: invite with bot and applications.commands scopes. Enable Discord Developer Mode to copy IDs. Leave Interactions Endpoint URL blank.`n"
+    . "Safety: only the configured Owner ID can control the macro. The bot uses this PC's local Gateway sidecar; never share the token.")
+
+MainGui.SetFont("s12 w400 cFFFFFF")
+global Tab4_BotTest := MainGui.Add("Text", "x30 y545 w300 h40 Center Background120B0D +Border 0x200 Hidden", "Test remote bot")
+Tab4_BotTest.OnEvent("Click", TestKronoxDiscordBot)
+global Tab4_BotSave := MainGui.Add("Text", "x340 y545 w330 h40 Center Background120B0D +Border 0x200 Hidden", "Save + start remote bot")
+Tab4_BotSave.OnEvent("Click", SaveKronoxDiscordBotSettings)
+SetButtonRole(Tab4_BotSave, "Primary")
+HoverEffect_btns.Push(Tab4_BotTest)
+HoverEffect_btns.Push(Tab4_BotSave)
+
+global DiscordWebhookTabCtrls := [Tab4_Lbl1, WebhookLinkCtrl, WebhookEnabledCtrl, Tab4_Line2,
+    SendCurrCtrl, DebugLogsCtrl, WebhookScreenshotsCtrl, WebhookTriumphScreenshotsCtrl,
+    WebhookSepatateTriumphScreenshotsCtrl, WebhookLinkCtrl2, Tab4_Info, Tab4_Btn1, Tab4_Btn2]
+global DiscordBotTabCtrls := [Tab4_BotTokenLabel, Tab4_BotTokenCtrl, Tab4_BotEnabledCtrl,
+    Tab4_BotApplicationLabel, Tab4_BotOwnerLabel, Tab4_BotApplicationCtrl, Tab4_BotOwnerCtrl,
+    Tab4_BotChannelLabel, Tab4_BotGuildLabel, Tab4_BotChannelCtrl, Tab4_BotGuildCtrl,
+    Tab4_BotInfo, Tab4_BotTest, Tab4_BotSave]
 
 ;TAB 5 - SETTINGS ==========================
 
@@ -1510,6 +1601,15 @@ DebugConsoleCtrl.Value := (DebugConsole = "1" || DebugConsole = 1)
 global PotatoModeCtrl := MainGui.Add("Checkbox", "x570 y160 Hidden", "Potato Mode")
 PotatoModeCtrl.Value := (PotatoMode = 1)
 
+global LegacyModeCtrl := MainGui.Add("Checkbox", "x510 y245 Hidden", "Legacy image mode")
+LegacyModeCtrl.Value := (LegacyMode = "1" || LegacyMode = 1)
+LegacyModeCtrl.OnEvent("Click", LegacyModeInfo)
+
+MainGui.SetFont("s9 w400 cFFFFFF")
+global UpgradeDelayLbl := MainGui.Add("Text", "x468 y238 w100 h20 Hidden BackgroundTrans", "Upgrade delay:")
+global UpgradeDelayCtrl := MainGui.Add("Edit", "x570 y234 w58 h22 Center Number Limit4 Hidden", UpgradeDelay)
+global UpgradeDelayUnitLbl := MainGui.Add("Text", "x632 y238 w40 h20 Hidden BackgroundTrans", "ms")
+
 MainGui.SetFont("s9 w400 cB79AA0")
 global Tab1_Lbl3 := MainGui.Add("Text", "x530 y220 w100 h20 Hidden BackgroundTrans", "Timescale:")
 MainGui.SetFont("s9 w400 cFFFFFF")
@@ -1561,50 +1661,53 @@ global RecordInputsKeyCtrl := MainGui.Add("Hotkey", "x580 y304 w90 h20 Center Hi
 global HoloTEXT := MainGui.Add("Text", "x480 y334 w95 h20 Hidden", "Hologram Tower:")
 global HoloKeyCtrl := MainGui.Add("Hotkey", "x580 y334 w90 h20 Center Hidden", HoloKey)
 
-global RaiseDeadTEXT := MainGui.Add("Text", "x480 y366 w95 h20 Hidden", "Raise the Dead:")
-global UseRaiseDeadKeyCtrl := MainGui.Add("Hotkey", "x580 y366 w90 h20 Center Hidden", UseRaiseDeadKey)
+global ChangeTargetsTEXT := MainGui.Add("Text", "x480 y366 w95 h20 Hidden", "Change Target:")
+global ChangeTargetsKeyCtrl := MainGui.Add("Hotkey", "x580 y366 w90 h20 Center Hidden", ChangeTargetsKey)
 
-global Tab5_Line4 := MainGui.Add("Progress", "x30 y393 w640 h1 Hidden Background43242B", 0)
+global RaiseDeadTEXT := MainGui.Add("Text", "x480 y396 w95 h20 Hidden", "Raise the Dead:")
+global UseRaiseDeadKeyCtrl := MainGui.Add("Hotkey", "x580 y396 w90 h20 Center Hidden", UseRaiseDeadKey)
+
+global Tab5_Line4 := MainGui.Add("Progress", "x30 y423 w640 h1 Hidden Background43242B", 0)
 
 MainGui.SetFont("s9 w400 cB79AA0")
-global Tab5_Lbl4 := MainGui.Add("Text", "x30 y405 w100 h20 Hidden", "VIP Server Link:")
+global Tab5_Lbl4 := MainGui.Add("Text", "x30 y435 w100 h20 Hidden", "VIP Server Link:")
 MainGui.SetFont("s9 w400 c000000")
-global VipLinkCtrl := MainGui.Add("Edit", "x30 y430 w640 h24 Hidden", VipLink)
+global VipLinkCtrl := MainGui.Add("Edit", "x30 y460 w640 h24 Hidden", VipLink)
 MainGui.SetFont("s11 w400 cFFFFFF")
 VipLinkCtrl.OnEvent("Change", CheckVipLink)
 
-global UseVipServerCtrl := MainGui.Add("Checkbox", "x30 y465 Hidden", "Use VIP Server")
+global UseVipServerCtrl := MainGui.Add("Checkbox", "x30 y495 Hidden", "Use VIP Server")
 UseVipServerCtrl.Value := (UseVipServer = "1" || UseVipServer = 1)
 
-global AlwaysOnTopCtrl := MainGui.Add("Checkbox", "x160 y465 Hidden", "Always On Top")
+global AlwaysOnTopCtrl := MainGui.Add("Checkbox", "x160 y495 Hidden", "Always On Top")
 AlwaysOnTopCtrl.Value := (AlwaysOnTop = "1" || AlwaysOnTop = 1)
 
 MainGui.SetFont("s10 w600 cEF2B2D", "Segoe UI")
-global TowerXPSection := MainGui.Add("Text", "x30 y505 w200 h22 Hidden BackgroundTrans", "Tower XP Tracker")
-global TowerXPLine := MainGui.Add("Progress", "x30 y528 w640 h1 Hidden Background43242B", 0)
+global TowerXPSection := MainGui.Add("Text", "x30 y523 w200 h22 Hidden BackgroundTrans", "Tower XP Tracker")
+global TowerXPLine := MainGui.Add("Progress", "x30 y546 w640 h1 Hidden Background43242B", 0)
 
 MainGui.SetFont("s9 w400 cFFFFFF", "Segoe UI")
-global TowerXPEnabledCtrl := MainGui.Add("Checkbox", "x30 y544 w150 h22 Hidden", "Enable XP tracking")
+global TowerXPEnabledCtrl := MainGui.Add("Checkbox", "x30 y562 w150 h22 Hidden", "Enable XP tracking")
 TowerXPEnabledCtrl.Value := TowerXPTrackerEnabled
 TowerXPEnabledCtrl.OnEvent("Click", UpdateTowerXPControlState)
 
 MainGui.SetFont("s8 w400 cB79AA0", "Segoe UI")
-global TowerXPStopModeLabelCtrl := MainGui.Add("Text", "x250 y547 w95 h18 Hidden", "Stop macro when:")
+global TowerXPStopModeLabelCtrl := MainGui.Add("Text", "x250 y565 w95 h18 Hidden", "Stop macro when:")
 MainGui.SetFont("s8 w400 c000000", "Segoe UI")
-global TowerXPStopModeCtrl := MainGui.Add("DropDownList", "x350 y542 w180 Hidden", ["Never", "Any selected tower", "All selected towers"])
+global TowerXPStopModeCtrl := MainGui.Add("DropDownList", "x350 y560 w180 Hidden", ["Never", "Any selected tower", "All selected towers"])
 TowerXPStopModeCtrl.Text := TowerXPStopModeLabel(TowerXPStopMode)
 TowerXPStopModeCtrl.OnEvent("Change", UpdateTowerXPControlState)
 
 MainGui.SetFont("s8 w700 cFF6B6D", "Segoe UI")
-global TowerXPSkinWarning := MainGui.Add("Text", "x30 y578 w640 h36 Hidden Background180E11 +Border 0x200", "  DEFAULT SKINS REQUIRED — tracked towers MUST use their default skin. Alternate skins cannot be identified safely and will be ignored.")
+global TowerXPSkinWarning := MainGui.Add("Text", "x30 y596 w640 h36 Hidden Background180E11 +Border 0x200", "  DEFAULT SKINS REQUIRED — tracked towers MUST use their default skin. Alternate skins cannot be identified safely and will be ignored.")
 
 MainGui.SetFont("s8 w600 cB79AA0", "Segoe UI")
-global TowerXPHeaderTrack := MainGui.Add("Text", "x30 y624 w35 h18 Center Hidden", "USE")
-global TowerXPHeaderName := MainGui.Add("Text", "x70 y624 w110 h18 Hidden", "TOWER")
-global TowerXPHeaderLevel := MainGui.Add("Text", "x195 y624 w55 h18 Center Hidden", "LEVEL")
-global TowerXPHeaderXP := MainGui.Add("Text", "x268 y624 w82 h18 Center Hidden", "XP IN LEVEL")
-global TowerXPHeaderNext := MainGui.Add("Text", "x365 y624 w130 h18 Center Hidden", "NEXT LEVEL")
-global TowerXPHeaderStop := MainGui.Add("Text", "x525 y624 w135 h18 Center Hidden", "STOP TARGET")
+global TowerXPHeaderTrack := MainGui.Add("Text", "x30 y642 w35 h18 Center Hidden", "USE")
+global TowerXPHeaderName := MainGui.Add("Text", "x70 y642 w110 h18 Hidden", "TOWER")
+global TowerXPHeaderLevel := MainGui.Add("Text", "x195 y642 w55 h18 Center Hidden", "LEVEL")
+global TowerXPHeaderXP := MainGui.Add("Text", "x268 y642 w82 h18 Center Hidden", "XP IN LEVEL")
+global TowerXPHeaderNext := MainGui.Add("Text", "x365 y642 w130 h18 Center Hidden", "NEXT LEVEL")
+global TowerXPHeaderStop := MainGui.Add("Text", "x525 y642 w135 h18 Center Hidden", "STOP TARGET")
 
 global TowerXPRows := []
 global TowerXPTrackCtrls := []
@@ -1618,7 +1721,7 @@ global TowerXPSettingsCtrls := [TowerXPSection, TowerXPLine, TowerXPEnabledCtrl,
     TowerXPHeaderNext, TowerXPHeaderStop]
 
 for towerIndex, towerDef in TowerXPDefinitions() {
-    rowY := 648 + ((towerIndex - 1) * 28)
+    rowY := 666 + ((towerIndex - 1) * 28)
     section := TowerXPSectionName(towerDef.name)
     tracked := Integer(IniRead(SettingsFile, section, "Tracked", 0))
     level := Integer(IniRead(SettingsFile, section, "Level", 0))
@@ -1778,13 +1881,13 @@ global SettingsScrollableCtrls := [Tab5_Section1, Tab5_Line1, Tab5_Lbl1, ChainKe
     Tab5_LblUPGBTM, UpgradeTowerGBCtrl, Tab5_Section2, Tab5_Line2, UseUpgradeHCtrl,
     Tab5_Help6, UseRestartBtnCtrl, Tab5_Help4, UsePlayAgainBtnCtrl, Tab5_Help5,
     CheckTheMapCtrl, Tab5_Help7, UseNumbersForHotbarCtrl, CollectPlaytimeRewardsCtrl,
-    DebugConsoleCtrl, PotatoModeCtrl, Tab1_Lbl3, TimeScaleModeCtrl, MouseSpeedLbl,
+    DebugConsoleCtrl, PotatoModeCtrl, LegacyModeCtrl, UpgradeDelayLbl, UpgradeDelayCtrl, UpgradeDelayUnitLbl, Tab1_Lbl3, TimeScaleModeCtrl, MouseSpeedLbl,
     MouseSpeedTxt, MouseSpeedUpDown, MouseDelayLbl, MouseDelayTxt, MouseDelayUpDown,
     KeyDelayLbl, KeyDelayTxt, KeyDelayUpDown, Tab5_Section3, Tab5_Line3, PlcTowerTEXT,
     PlaceTowerKeyCtrl, UpgTowerTEXT, UpgradeTowerKeyCtrl, AlignCamTEXT, AlignCameraKeyCtrl,
     DjTrackTEXT, ChangeDJTrackKeyCtrl, SellTowTEXT, SellTowerKeyCtrl, DelRecTEXT,
     DeleteTowerRecordingKeyCtrl, RecInputsTEXT, RecordInputsKeyCtrl, HoloTEXT, HoloKeyCtrl,
-    RaiseDeadTEXT, UseRaiseDeadKeyCtrl, Tab5_Line4, Tab5_Lbl4, VipLinkCtrl,
+    ChangeTargetsTEXT, ChangeTargetsKeyCtrl, RaiseDeadTEXT, UseRaiseDeadKeyCtrl, Tab5_Line4, Tab5_Lbl4, VipLinkCtrl,
     UseVipServerCtrl, AlwaysOnTopCtrl]
 for towerXPSettingCtrl in TowerXPSettingsCtrls
     SettingsScrollableCtrls.Push(towerXPSettingCtrl)
@@ -2114,6 +2217,8 @@ EnableStratRotation()
 
 SetTimer(Hoverwatchdog, 10)
 SetTimer(HotbarSafetyWatchdog, 12000)
+if KronoxBotEnabled
+    SetTimer(StartKronoxDiscordBot, -1000)
 
 OnMessage(0x0201, WM_LBUTTONDOWN_Drag)
 OnMessage(0x0200, EditorHotbarDragMouseMove)
@@ -2389,6 +2494,7 @@ HideAllTabContent() {
 CenterLegacyTabLayouts() {
     static centered := false
     global MainWindowWidth, FrameX, Tab2Ctrls, TAB3, StatsCtrls, CreditsCtrls, TowerXPSettingsCtrls, KronoxFeatureSettingsCtrls, CommunityLibraryCtrls
+    global DiscordWebhookTabCtrls, DiscordBotTabCtrls
     if (centered)
         return
     centered := true
@@ -2406,22 +2512,22 @@ CenterLegacyTabLayouts() {
         CommunityLibraryCtrls,
         Tab2Ctrls,
         TAB3,
-        [Tab4_Title, Tab4_Line1, Tab4_Lbl1, WebhookLinkCtrl, WebhookEnabledCtrl, Tab4_Line2,
-         SendCurrCtrl, DebugLogsCtrl, WebhookScreenshotsCtrl, WebhookTriumphScreenshotsCtrl,
-         WebhookSepatateTriumphScreenshotsCtrl, WebhookLinkCtrl2, Tab4_Info, Tab4_Btn1, Tab4_Btn2],
+        [Tab4_Title, Tab4_Line1, Tab4_ModeSwitch],
+        DiscordWebhookTabCtrls,
+        DiscordBotTabCtrls,
         [Tab5_Section1, Tab5_Line1, Tab5_Lbl1, ChainKeyCtrl, Tab5_Lbl2, BeatKeyCtrl,
          Tab5_Lbl3, CaravanKeyCtrl, Tab5_Lbl44, RaiseDeadKeyCtrl, Tab5_Lbl55, HologramKeyCtrl,
          Tab5_Lbl56, RepoKeyCtrl, Tab5_Help11, Tab5_LblSwatVan, SwatVanKeyCtrl, Tab5_Lbl99, CancelPlacementKeyCtrl,
          Tab5_LblUPG, UpgradeTowerGCtrl, Tab5_LblUPGBTM, UpgradeTowerGBCtrl,
          Tab5_Section2, Tab5_Line2, UseUpgradeHCtrl, Tab5_Help6, UseRestartBtnCtrl, Tab5_Help4,
          UsePlayAgainBtnCtrl, Tab5_Help5, CheckTheMapCtrl, Tab5_Help7, UseNumbersForHotbarCtrl,
-         CollectPlaytimeRewardsCtrl, DebugConsoleCtrl, PotatoModeCtrl, Tab1_Lbl3, TimeScaleModeCtrl,
+         CollectPlaytimeRewardsCtrl, DebugConsoleCtrl, PotatoModeCtrl, LegacyModeCtrl, UpgradeDelayLbl, UpgradeDelayCtrl, UpgradeDelayUnitLbl, Tab1_Lbl3, TimeScaleModeCtrl,
          MouseSpeedLbl, MouseSpeedTxt, MouseSpeedUpDown, MouseDelayLbl, MouseDelayTxt,
          MouseDelayUpDown, KeyDelayLbl, KeyDelayTxt, KeyDelayUpDown, Tab5_Section3, Tab5_Line3,
          PlcTowerTEXT, PlaceTowerKeyCtrl, UpgTowerTEXT, UpgradeTowerKeyCtrl, AlignCamTEXT,
          AlignCameraKeyCtrl, DjTrackTEXT, ChangeDJTrackKeyCtrl, SellTowTEXT, SellTowerKeyCtrl,
          DelRecTEXT, DeleteTowerRecordingKeyCtrl, RecInputsTEXT, RecordInputsKeyCtrl, HoloTEXT,
-         HoloKeyCtrl, RaiseDeadTEXT, UseRaiseDeadKeyCtrl, Tab5_Line4, Tab5_Lbl4, VipLinkCtrl,
+         HoloKeyCtrl, ChangeTargetsTEXT, ChangeTargetsKeyCtrl, RaiseDeadTEXT, UseRaiseDeadKeyCtrl, Tab5_Line4, Tab5_Lbl4, VipLinkCtrl,
          UseVipServerCtrl, AlwaysOnTopCtrl, Tab5_Btn1],
         TowerXPSettingsCtrls,
         KronoxFeatureSettingsCtrls,
@@ -2460,10 +2566,7 @@ ShowTabContent(tab) {
         for ctrl in TAB3
             ctrl.Visible := true
     } else if (tab = "Tab4") {
-        for ctrl in [Tab4_Title, Tab4_Line1, Tab4_Lbl1, WebhookLinkCtrl, WebhookEnabledCtrl,
-                     Tab4_Line2, SendCurrCtrl, Tab4_Info, Tab4_Btn1, Tab4_Btn2, DebugLogsCtrl, WebhookScreenshotsCtrl, WebhookTriumphScreenshotsCtrl, WebhookSepatateTriumphScreenshotsCtrl]
-            ctrl.Visible := true
-        EnableWebhookLink2()
+        ShowDiscordRemoteView()
 } else if (tab = "Tab5") {
         for ctrl in [Tab5_Section1, Tab5_Line1, Tab5_Lbl1, ChainKeyCtrl,
                      Tab5_Lbl2, BeatKeyCtrl, Tab5_Lbl3, CaravanKeyCtrl,
@@ -2471,13 +2574,13 @@ ShowTabContent(tab) {
                      Tab5_Lbl99, Tab5_LblUPG, Tab5_LblUPGBTM, CancelPlacementKeyCtrl, UpgradeTowerGCtrl, UpgradeTowerGBCtrl, Tab1_Lbl3, TimeScaleModeCtrl,
                      Tab5_Section2, Tab5_Line2, Tab5_Help6,
                      UseRestartBtnCtrl, Tab5_Help4, UsePlayAgainBtnCtrl, Tab5_Help5,
-                     CheckTheMapCtrl, UseNumbersForHotbarCtrl, UseUpgradeHCtrl, Tab5_Help7, Tab5_Help11, PotatoModeCtrl, DebugConsoleCtrl,
+                     CheckTheMapCtrl, UseNumbersForHotbarCtrl, UseUpgradeHCtrl, Tab5_Help7, Tab5_Help11, PotatoModeCtrl, LegacyModeCtrl, DebugConsoleCtrl, UpgradeDelayLbl, UpgradeDelayCtrl, UpgradeDelayUnitLbl,
                      Tab5_Section3, Tab5_Line3, PlcTowerTEXT, UpgTowerTEXT, AlignCamTEXT,
                      DjTrackTEXT, SellTowTEXT, DelRecTEXT, RecInputsTEXT,
-                     HoloTEXT, RaiseDeadTEXT,
+                     HoloTEXT, ChangeTargetsTEXT, RaiseDeadTEXT,
                      PlaceTowerKeyCtrl, UpgradeTowerKeyCtrl, AlignCameraKeyCtrl,
                      ChangeDJTrackKeyCtrl, SellTowerKeyCtrl, DeleteTowerRecordingKeyCtrl,
-                     RecordInputsKeyCtrl, HoloKeyCtrl, UseRaiseDeadKeyCtrl,
+                     RecordInputsKeyCtrl, HoloKeyCtrl, ChangeTargetsKeyCtrl, UseRaiseDeadKeyCtrl,
                      CollectPlaytimeRewardsCtrl,
                      Tab5_Line4, Tab5_Lbl4, VipLinkCtrl, UseVipServerCtrl, AlwaysOnTopCtrl, Tab5_Btn1,
                      MouseSpeedLbl, MouseSpeedTxt, MouseSpeedUpDown,
@@ -2501,8 +2604,11 @@ ShowTabContent(tab) {
         ChangeDJTrackKeyCtrl.Value := ChangeDJTrackKey
         RecordInputsKeyCtrl.Value := RecordInputsKey
         HoloKeyCtrl.Value := HoloKey
+        ChangeTargetsKeyCtrl.Value := ChangeTargetsKey
         UseRaiseDeadKeyCtrl.Value := UseRaiseDeadKey
         TimeScaleModeCtrl.Text := TimeScaleMode
+        LegacyModeCtrl.Value := (LegacyMode = "1" || LegacyMode = 1)
+        UpgradeDelayCtrl.Value := UpgradeDelay
         
         MouseSpeedUpDown.Value := DefaultMouseSpeed
         MouseSpeedTxt.Value := DefaultMouseSpeed
@@ -2819,7 +2925,7 @@ FormatStatsDuration(totalSeconds) {
 
 BeginTrackedRun() {
     global StateFile, OverallStatsFile, RunLedgerFile, RunContextFile, StrategyProfileFile
-    global SettingsFile, gamemap, difficulty, modifiers
+    global SettingsFile, gamemap, difficulty, modifiers, TimeScaleMode
 
     ResolveActiveRunWithoutResult("Unconfirmed", "next-run-started")
 
@@ -2857,6 +2963,7 @@ BeginTrackedRun() {
     IniWrite(modifierDisplay, StateFile, "State", "ActiveModifierDisplay")
     IniWrite(boostContext.profile, StateFile, "State", "ActiveXPBoostProfile")
     IniWrite(boostContext.factor, StateFile, "State", "ActiveXPBoostFactor")
+    IniWrite(TimeScaleMode, StateFile, "State", "ActiveTimeScaleMode")
 
     KronoxBudgetBeginRun(StateFile)
     profilerEnabled := KronoxFeatureBool(IniRead(SettingsFile, "Analytics", "ProfilerEnabled", 1))
@@ -2942,7 +3049,7 @@ ClearActiveRunState() {
 
     for key in ["ActiveRunId", "ActiveRunStartedAt", "ActiveRunStartedTick", "ActiveStrategyPath",
         "ActiveStrategyName", "ActiveStrategyFingerprint", "ActiveStrategyDisplay", "ActiveMap",
-        "ActiveMode", "ActiveModifiers", "ActiveModifierDisplay", "ActiveXPBoostProfile", "ActiveXPBoostFactor"]
+        "ActiveMode", "ActiveModifiers", "ActiveModifierDisplay", "ActiveXPBoostProfile", "ActiveXPBoostFactor", "ActiveTimeScaleMode"]
         try IniDelete(StateFile, "State", key)
 }
 
@@ -3585,11 +3692,11 @@ EnableStratRotation(*) {
         IniWrite(AutoEquip, SettingsFile, "Options", "AutoEquip")
         SwapAmount := SwapAmountCtrl.Text
         SwapUnit := SwapUnitCtrl.Text
-        AutoEquipCtrl.Move(357, 190)
+        AutoEquipCtrl.Move(365, 190)
         IniWrite(SwapAmount, SettingsFile, "Options", "SwapAmount")
         IniWrite(SwapUnit, SettingsFile, "Options", "SwapUnit")
     } else {
-        AutoEquipCtrl.Move(155, 190)
+        AutoEquipCtrl.Move(205, 190)
     }
 }
 
@@ -4718,6 +4825,10 @@ StartStrategy(ctrl, *) {
             stratFile := s2
     }
 
+    queuedRemoteStrategy := ""
+    if ConsumeKronoxRemoteStrategySwitch(&queuedRemoteStrategy)
+        stratFile := queuedRemoteStrategy
+
     if (stratFile = "") {
         ModernMsgBox("Warning", "No valid strategy file selected!", "OK", "WARNING")
         return
@@ -4817,7 +4928,7 @@ StartStrategy(ctrl, *) {
 }
 
 StopStrategy(ctrl, *) {
-    global RunningStrategy, AutorunStartTime, Recording, MacroRecording, InputHookObj
+    global RunningStrategy, AutorunStartTime, Recording, MacroRecording, InputHookObj, StateFile
 
     SuspendAutomationInput("manual-stop")
     KillSubmacros()
@@ -4853,6 +4964,7 @@ StopStrategy(ctrl, *) {
         IniDelete(StateFile, "State", "CurrentRotationIndex")
         IniDelete(StateFile, "State", "CurrentRunCount")
         IniDelete(StateFile, "State", "TimeWhenStartedPlaying")
+        KronoxClearRemoteSessionRequests()
         RunningStrategy := false
         SafeReload()
     }
@@ -5122,7 +5234,7 @@ PlaceTowerHK(*) {
     Sleep(100)
     SendGameplayKey(CancelPlacementKey, "Cancel placement")
 
-    Towers[towerID] := {x: mx, y: my, slot: slot, level: 0, path: 0, pathLevel: 0}
+    Towers[towerID] := {x: mx, y: my, slot: slot, level: 0, path: 0, pathLevel: 0, target: "First Enemy"}
     UpdateTowerIndicator(towerID)
     LogToConsole("Recorded tower " towerID " (slot " slot ")")
 
@@ -5228,6 +5340,212 @@ ChangeDJTrackHK(*) {
     if (box.Result != "Cancel") {
         RecordedSteps.Push('SetDJTrack("' box.Value '")')
         LogToConsole("Recorded DJ-track " box.Value)
+    }
+}
+
+RecordToggleAutoskip(*) {
+    global Recording, RecordedSteps, RecAutoSkipCtrl
+    if !Recording
+        return
+
+    RecordedSteps.Push("ToggleAutoskip()")
+    state := RecAutoSkipCtrl.Value ? "ON" : "OFF"
+    LogToConsole("Recorded auto-skip toggle: " state)
+}
+
+ToggleAutoskip() {
+    global AutoSkip
+    AutoSkip := (AutoSkip = "ON") ? "OFF" : "ON"
+    LogToConsole("Toggled auto-skip: " AutoSkip)
+}
+
+TowerTargetNames() {
+    return ["First Enemy", "Last Enemy", "Strongest", "Weakest", "Closest", "Farthest", "Random"]
+}
+
+NormalizeTowerTarget(value) {
+    normalized := StrLower(Trim(value))
+    for target in TowerTargetNames() {
+        if (StrLower(target) = normalized)
+            return target
+    }
+    return ""
+}
+
+TowerTargetImagePath(target) {
+    return "Resources\TowerUI\" StrLower(target) ".png"
+}
+
+ChangeTargetsHK(*) {
+    global Recording, ActiveRTowerID, LastOpenedTowerID, RecordedSteps, ChangeTargetsKey
+
+    if !Recording {
+        if BlockUnsafeRecordingHotkeyPassthrough(ChangeTargetsKey, "Change Target hotkey")
+            return
+        return
+    }
+
+    towerID := ActiveRTowerID
+    if (towerID = "") {
+        idBox := InputBox("Enter the tower ID:", "Change Targets", "w340 h130", "")
+        if (idBox.Result = "Cancel")
+            return
+        towerID := Trim(idBox.Value)
+        if (towerID = "")
+            return
+    } else {
+        LastOpenedTowerID := towerID
+    }
+
+    targetBox := InputBox("Target: First Enemy, Last Enemy, Strongest, Weakest, Closest, Farthest, or Random", "Change Targets", "w500 h130", "First Enemy")
+    if (targetBox.Result = "Cancel")
+        return
+    target := NormalizeTowerTarget(targetBox.Value)
+    if (target = "") {
+        MsgBox("Choose one of the supported target names shown in this dialog.", "Change Targets", 0x1030)
+        return
+    }
+
+    if ChangeTargets(towerID, target) {
+        RecordedSteps.Push("ChangeTargets(" towerID ", " target ")")
+        LogToConsole("Recorded ChangeTargets(" towerID ", " target ")")
+    }
+}
+
+LegacyModeInfo(*) {
+    global LegacyModeCtrl
+    if LegacyModeCtrl.Value {
+        MsgBox("Legacy image mode uses basic 1920x1080 ImageSearch. Keep it off unless advanced image detection does not work on your setup.`n`nAuto Equip and Change Targets use advanced detection, so those features are disabled in Legacy mode.", "Legacy image mode", 0x1030)
+    }
+}
+
+FindTowerTargetSelector(&leftButton, &rightButton, timeoutMs := 5000) {
+    leftButton := 0
+    rightButton := 0
+    started := A_TickCount
+    Loop {
+        getRobloxPos(,, &w, &h)
+        left := AdvImageSearch("Resources\TowerUI\left.png", 0, 0, Round(w / 2), Round(h / 1.3))
+        if (left.status = "success" && left.score > 0.66) {
+            right := AdvImageSearch("Resources\TowerUI\right.png", left.x + ScaleX(20), 0, Round(w / 2), Round(h / 1.3))
+            if (right.status = "success" && right.score > 0.66) {
+                leftButton := left
+                rightButton := right
+                return true
+            }
+        }
+        if (A_TickCount - started >= timeoutMs)
+            return false
+        Sleep(150)
+    }
+}
+
+DetectTowerTarget() {
+    getRobloxPos(,, &w, &h)
+    bestScore := 0
+    detected := ""
+    for target in TowerTargetNames() {
+        probe := AdvImageSearch(TowerTargetImagePath(target), 0, 0, Round(w / 2), Round(h / 1.3))
+        if (probe.status = "success" && probe.score > bestScore) {
+            bestScore := probe.score
+            detected := target
+        }
+    }
+    return (bestScore >= 0.66) ? detected : ""
+}
+
+ChangeTargets(towerID, requestedTarget) {
+    global Towers, LastOpenedTowerID, canUseAbility, LegacyMode, unfocusX, unfocusY
+
+    target := NormalizeTowerTarget(requestedTarget)
+    if (target = "") {
+        LogToConsole("Unsupported tower target: " requestedTarget, true, false)
+        return false
+    }
+    if (LegacyMode = 1 || LegacyMode = "1") {
+        LogToConsole("Change Targets is unavailable while Legacy image mode is enabled.", true, false)
+        return false
+    }
+    if !Towers.Has(towerID) {
+        LogToConsole("Tower " towerID " not found for changing targets.", true, false)
+        return false
+    }
+
+    canUseAbility := false
+    try {
+        tower := Towers[towerID]
+        if (!tower.HasProp("target"))
+            tower.target := "First Enemy"
+
+        if (LastOpenedTowerID != towerID) {
+            Click(tower.x, tower.y)
+            Sleep(250)
+        } else {
+            MouseMove(0, ScaleY(50),, "R")
+        }
+        LastOpenedTowerID := towerID
+
+        if !waitForTowerUI(,,2500) {
+            LogToConsole("Could not open the tower menu for target change: " towerID, true, false)
+            return false
+        }
+        if !FindTowerTargetSelector(&leftButton, &rightButton) {
+            LogToConsole("Could not find target arrows for " towerID "; no click was sent.", true, false)
+            return false
+        }
+
+        currentTarget := DetectTowerTarget()
+        if (currentTarget = "")
+            currentTarget := tower.target
+        if (currentTarget = "")
+            currentTarget := "First Enemy"
+
+        targets := TowerTargetNames()
+        currentIndex := 1
+        targetIndex := 1
+        for index, item in targets {
+            if (item = currentTarget)
+                currentIndex := index
+            if (item = target)
+                targetIndex := index
+        }
+
+        rightSteps := targetIndex - currentIndex
+        if (rightSteps < 0)
+            rightSteps += targets.Length
+        leftSteps := currentIndex - targetIndex
+        if (leftSteps < 0)
+            leftSteps += targets.Length
+        button := (rightSteps <= leftSteps) ? rightButton : leftButton
+        clicks := (rightSteps <= leftSteps) ? rightSteps : leftSteps
+
+        Loop clicks {
+            Click(button.x, button.y)
+            Sleep(500)
+        }
+
+        Click(ScaleX(unfocusX), ScaleY(unfocusY))
+        Sleep(250)
+        LastOpenedTowerID := ""
+        Click(tower.x, tower.y)
+        Sleep(250)
+        LastOpenedTowerID := towerID
+        if !waitForTowerUI(,,2500) {
+            LogToConsole("Target change could not re-open " towerID " for verification.", true, false)
+            return false
+        }
+
+        verifiedTarget := DetectTowerTarget()
+        if (verifiedTarget != target) {
+            LogToConsole("Target change for " towerID " could not be verified (wanted " target ", saw " (verifiedTarget = "" ? "nothing" : verifiedTarget) ").", true, false)
+            return false
+        }
+        tower.target := target
+        Towers[towerID] := tower
+        LogToConsole("Changed " towerID " target to " target ".")
+        return true
+    } finally {
+        canUseAbility := true
     }
 }
 
@@ -5634,7 +5952,20 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
             continue
         }
         
-        MouseClick(,Towers[towerId].x, Towers[towerId].y)
+        if !ClickCloneSourceTowerSafely(towerId) {
+            LogToConsole("Clone source " towerId " was not visually verified; retrying without a blind click...", true, false)
+            KronoxProfilerRetry("CloneTower " towerId, "source tower hover was not verified")
+            SendGameplayKey(CancelPlacementKey, "Cancel unverified clone")
+            if (maxAttempts > 0 && attempts >= maxAttempts) {
+                LogToConsole("Clone " towerId " reached its " maxAttempts "-attempt limit; deferring this step.", true)
+                canUseAbility := true
+                return false
+            }
+            canUseAbility := true
+            Sleep(700)
+            canUseAbility := false
+            continue
+        }
 
         Sleep 350
 
@@ -5669,6 +6000,8 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
         MouseMove(x,y)
         Sleep 100
         MouseClick()
+        if !VerifyTowerHotbarAfterRiskyClick("clone placement for " towerId)
+            return false
 
         Sleep 50
         SendGameplayKey(CancelPlacementKey, "Cancel placement")
@@ -6032,6 +6365,705 @@ SelectPath(pathGui, pathNum) {
     LogToConsole("Tower " towerID " set to path " pathNum " from level " box.Value)
 }
 
+SwitchDiscordRemoteView(*) {
+    global DiscordRemoteView
+    DiscordRemoteView := (DiscordRemoteView = "Webhook") ? "Bot" : "Webhook"
+    ShowDiscordRemoteView()
+}
+
+ShowDiscordRemoteView() {
+    global DiscordRemoteView, DiscordWebhookTabCtrls, DiscordBotTabCtrls
+    global Tab4_Title, Tab4_Line1, Tab4_ModeSwitch, Tab4_BotEnabledCtrl, Tab4_BotTokenCtrl
+    global Tab4_BotApplicationCtrl, Tab4_BotChannelCtrl, Tab4_BotGuildCtrl, Tab4_BotOwnerCtrl
+    global KronoxBotEnabled, KronoxBotToken, KronoxBotApplicationID, KronoxBotChannelID, KronoxBotGuildID, KronoxBotOwnerUserID
+
+    for ctrl in DiscordWebhookTabCtrls
+        ctrl.Visible := false
+    for ctrl in DiscordBotTabCtrls
+        ctrl.Visible := false
+
+    Tab4_Title.Visible := true
+    Tab4_Line1.Visible := true
+    Tab4_ModeSwitch.Visible := true
+    if (DiscordRemoteView = "Bot") {
+        Tab4_Title.Value := "Discord Remote Bot"
+        Tab4_ModeSwitch.Value := "Webhook"
+        Tab4_BotEnabledCtrl.Value := KronoxBotEnabled
+        Tab4_BotTokenCtrl.Value := KronoxBotToken
+        Tab4_BotApplicationCtrl.Value := KronoxBotApplicationID
+        Tab4_BotChannelCtrl.Value := KronoxBotChannelID
+        Tab4_BotGuildCtrl.Value := KronoxBotGuildID
+        Tab4_BotOwnerCtrl.Value := KronoxBotOwnerUserID
+        for ctrl in DiscordBotTabCtrls
+            ctrl.Visible := true
+    } else {
+        Tab4_Title.Value := "Discord Webhook"
+        Tab4_ModeSwitch.Value := "Remote Bot"
+        for ctrl in DiscordWebhookTabCtrls
+            ctrl.Visible := true
+        EnableWebhookLink2()
+    }
+}
+
+KronoxBotConfigFromUi() {
+    values := MainGui.Submit(false)
+    return {
+        enabled: values.KronoxBotEnabled ? 1 : 0,
+        token: Trim(values.KronoxBotToken),
+        applicationId: Trim(values.KronoxBotApplicationID),
+        channelId: Trim(values.KronoxBotChannelID),
+        guildId: Trim(values.KronoxBotGuildID),
+        ownerId: Trim(values.KronoxBotOwnerUserID)
+    }
+}
+
+ValidateKronoxBotConfig(config, requireEnabled := true) {
+    if (requireEnabled && !config.enabled)
+        return {ok: false, message: "Enable the remote bot before saving or testing it."}
+    if (config.token = "")
+        return {ok: false, message: "Enter a Discord bot token first."}
+    for label, value in Map("Application ID", config.applicationId, "Channel ID", config.channelId, "Owner user ID", config.ownerId) {
+        if !RegExMatch(value, "^\d{16,22}$")
+            return {ok: false, message: label " must be a valid Discord ID."}
+    }
+    if (config.guildId != "" && !RegExMatch(config.guildId, "^\d{16,22}$"))
+        return {ok: false, message: "Guild/server ID must be blank or a valid Discord ID."}
+    return {ok: true, message: ""}
+}
+
+SaveKronoxDiscordBotSettings(ctrl, *) {
+    global KronoxBotEnabled, KronoxBotToken, KronoxBotApplicationID, KronoxBotChannelID, KronoxBotGuildID, KronoxBotOwnerUserID, KronoxBotSettingsFile, KronoxBotCommandQueueDir
+
+    config := KronoxBotConfigFromUi()
+    if config.enabled {
+        validation := ValidateKronoxBotConfig(config)
+        if !validation.ok {
+            ModernMsgBox("Remote Bot", validation.message, "OK", "WARNING")
+            return
+        }
+    }
+
+    KronoxBotEnabled := config.enabled
+    KronoxBotToken := config.token
+    KronoxBotApplicationID := config.applicationId
+    KronoxBotChannelID := config.channelId
+    KronoxBotGuildID := config.guildId
+    KronoxBotOwnerUserID := config.ownerId
+    IniWrite(KronoxBotEnabled, KronoxBotSettingsFile, "Settings", "Enabled")
+    IniWrite(KronoxBotApplicationID, KronoxBotSettingsFile, "Settings", "ApplicationID")
+    IniWrite(KronoxBotChannelID, KronoxBotSettingsFile, "Settings", "ChannelID")
+    IniWrite(KronoxBotGuildID, KronoxBotSettingsFile, "Settings", "GuildID")
+    IniWrite(KronoxBotOwnerUserID, KronoxBotSettingsFile, "Settings", "OwnerUserID")
+    IniWrite(KronoxBotToken, KronoxBotSettingsFile, "Token", "BotToken")
+    ; A saved configuration may have a new app, guild, or owner. Force the
+    ; sidecar to refresh its slash-command registration exactly once.
+    try FileDelete(KronoxBotCommandQueueDir "\.registration-v1")
+
+    if !KronoxBotEnabled {
+        StopKronoxDiscordBot()
+        ModernMsgBox("Remote Bot", "Saved with the remote bot disabled. No Discord connection will be made.", "OK")
+        return
+    }
+
+    StartKronoxDiscordBot()
+    ModernMsgBox("Remote Bot", "Saved. The bot is registering /help, /status, /screenshot, /start, and /stop.`n`nUse the Guild ID for immediate command registration.", "OK")
+}
+
+TestKronoxDiscordBot(ctrl, *) {
+    config := KronoxBotConfigFromUi()
+    ; Testing credentials must be possible before the optional bot is enabled.
+    validation := ValidateKronoxBotConfig(config, false)
+    if !validation.ok {
+        ModernMsgBox("Remote Bot", validation.message, "OK", "WARNING")
+        return
+    }
+
+    probe := KronoxDiscordBotApiRequest("GET", "users/@me", config.token)
+    if !probe.ok {
+        ModernMsgBox("Remote Bot", "Discord rejected the bot credentials (HTTP " probe.status "). Check the token and try again.", "OK", "WARNING")
+        return
+    }
+    sent := KronoxDiscordBotApiRequest("POST", "channels/" config.channelId "/messages", config.token,
+        '{"content":"✅ Kronox Edition slash-command bot test succeeded."}')
+    if sent.ok
+        ModernMsgBox("Remote Bot", "Bot token accepted and the test message was sent.", "OK")
+    else
+        ModernMsgBox("Remote Bot", "The token is valid, but Discord could not send to that channel (HTTP " sent.status "). Check the channel ID and bot permissions.", "OK", "WARNING")
+}
+
+KronoxDiscordBotApiRequest(method, endpoint, token, body := "", contentType := "application/json") {
+    result := {ok: false, status: 0, response: ""}
+    try {
+        request := ComObject("WinHttp.WinHttpRequest.5.1")
+        request.Option[9] := 2720
+        request.Open(method, "https://discord.com/api/v10/" endpoint, false)
+        request.SetRequestHeader("User-Agent", "KronoxUltimateMacro/1.3.3")
+        request.SetRequestHeader("Authorization", "Bot " token)
+        hasBody := IsObject(body) || (body != "")
+        if hasBody
+            request.SetRequestHeader("Content-Type", contentType)
+        request.SetTimeouts(5000, 5000, 15000, 15000)
+        if !hasBody
+            request.Send()
+        else
+            request.Send(body)
+        result.status := request.Status
+        result.response := request.ResponseText
+        result.ok := (result.status >= 200 && result.status < 300)
+    } catch Error as err {
+        result.response := err.Message
+    }
+    return result
+}
+
+StartKronoxDiscordBot(*) {
+    global KronoxBotEnabled, KronoxBotToken, KronoxBotApplicationID, KronoxBotChannelID, KronoxBotOwnerUserID
+    global KronoxBotGatewayScript, KronoxBotSettingsFile, KronoxBotCommandQueueDir, KronoxBotRuntimeLogFile, KronoxBotGatewayPID
+
+    StopKronoxDiscordBot()
+    if (!KronoxBotEnabled)
+        return false
+    if (KronoxBotToken = "" || KronoxBotApplicationID = "" || KronoxBotChannelID = "" || KronoxBotOwnerUserID = "") {
+        WriteRuntimeLog("DISCORD", "Remote bot remains disabled at runtime because its configuration is incomplete.", "WARN")
+        return false
+    }
+    if !FileExist(KronoxBotGatewayScript) {
+        WriteRuntimeLog("DISCORD", "Remote bot sidecar is missing: " KronoxBotGatewayScript, "ERROR")
+        return false
+    }
+
+    ; Never execute a command left in the queue by a crashed/reloaded macro.
+    Loop Files, KronoxBotCommandQueueDir "\*.cmd", "F"
+        try FileDelete(A_LoopFileFullPath)
+
+    command := 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' KronoxBotGatewayScript '" -SettingsPath "' KronoxBotSettingsFile '" -CommandQueuePath "' KronoxBotCommandQueueDir '" -LogPath "' KronoxBotRuntimeLogFile '"'
+    try {
+        Run(command, A_ScriptDir, "Hide", &KronoxBotGatewayPID)
+        WriteRuntimeLog("DISCORD", "Started local slash-command gateway (PID " KronoxBotGatewayPID ").")
+        SetTimer(ProcessKronoxDiscordCommands, 500)
+        return true
+    } catch Error as err {
+        KronoxBotGatewayPID := 0
+        WriteRuntimeLog("DISCORD", "Could not start slash-command gateway: " err.Message, "ERROR")
+        return false
+    }
+}
+
+StopKronoxDiscordBot(*) {
+    global KronoxBotGatewayPID
+    SetTimer(ProcessKronoxDiscordCommands, 0)
+    if (KronoxBotGatewayPID && ProcessExist(KronoxBotGatewayPID)) {
+        try ProcessClose(KronoxBotGatewayPID)
+    }
+    KronoxBotGatewayPID := 0
+}
+
+; The PowerShell gateway only acknowledges Discord interactions.  Commands are
+; queued locally so every actual macro action stays in this process and follows
+; the same input-safety / lifecycle rules as a GUI action.
+ProcessKronoxDiscordCommands(*) {
+    global KronoxBotEnabled, KronoxBotCommandQueueDir, KronoxBotSettingsFile
+
+    if !KronoxBotEnabled
+        return
+
+    Loop Files, KronoxBotCommandQueueDir "\*.cmd", "F" {
+        commandFile := A_LoopFileFullPath
+        try payload := Trim(FileRead(commandFile, "UTF-8"), " `t`r`n")
+        catch Error
+            continue
+
+        ; Deleting immediately prevents a sidecar reconnect from replaying a
+        ; command. The interaction id below supplies a second durable guard.
+        try FileDelete(commandFile)
+        if (payload = "")
+            continue
+
+        parts := StrSplit(payload, "|")
+        if (parts.Length < 2)
+            continue
+        interactionId := Trim(parts[1])
+        action := StrLower(Trim(parts[2]))
+        argument := (parts.Length >= 3) ? Trim(parts[3]) : ""
+        argument2 := (parts.Length >= 4) ? Trim(parts[4]) : ""
+        previousId := IniRead(KronoxBotSettingsFile, "Runtime", "LastInteraction", "")
+        if (interactionId = "" || interactionId = previousId)
+            continue
+
+        IniWrite(interactionId, KronoxBotSettingsFile, "Runtime", "LastInteraction")
+        KronoxDispatchDiscordCommand(action, argument, argument2)
+    }
+}
+
+KronoxDispatchDiscordCommand(action, argument := "", argument2 := "") {
+    global RunningStrategy
+
+    switch action {
+        case "help":
+            KronoxBotSendChannel("**Kronox Remote Bot**`n`/status — state and this-run stats`n`/health — macro phase and recovery health`n`/screenshot — current desktop view`n`/start and /stop — start or immediately stop`n`/safe-stop — finish the current match, then stop`n`/switch slot:1|2 — safely swap strategy and standard loadout`n`/queue — pending remote actions`n`/timescale mode:off|1.5x|2x — next-match session override`n`/modifiers action:set|add|remove|clear|reset names:Exploding,Speedy — next-match session override`n`/loadout — selected strategy loadout`n`/best — best recorded coin/XP map and modifier set")
+        case "status":
+            KronoxBotSendChannel(KronoxBotStatusMessage())
+        case "health":
+            KronoxBotSendChannel(KronoxBotHealthMessage())
+        case "screenshot":
+            KronoxBotSendScreenshot("Kronox remote screenshot")
+        case "start":
+            if RunningStrategy
+                KronoxBotSendChannel("The macro is already running.")
+            else {
+                KronoxBotSendChannel("Remote start accepted. Starting the selected strategy…")
+                SetTimer(KronoxRemoteStart, -10)
+            }
+        case "stop":
+            if !RunningStrategy
+                KronoxBotSendChannel("The macro is already stopped.")
+            else {
+                KronoxBotSendChannel("Remote stop accepted. Releasing inputs and stopping safely…")
+                SetTimer(KronoxRemoteStop, -10)
+            }
+        case "safe-stop":
+            if !RunningStrategy {
+                KronoxBotSendChannel("The macro is already stopped; there is no active match to finish.")
+                return
+            }
+            KronoxQueueRemoteSafeStop()
+            KronoxBotSendChannel("Safe stop queued. The macro will finish the current match, then stop before another match begins.")
+        case "queue":
+            KronoxBotSendChannel(KronoxRemoteQueueMessage())
+        case "switch":
+            if !RegExMatch(argument, "^[12]$") {
+                KronoxBotSendChannel("Choose a configured strategy slot: /switch slot:1 or /switch slot:2.")
+                return
+            }
+            switchRequest := KronoxQueueRemoteStrategySwitch(Integer(argument))
+            if !switchRequest.ok {
+                KronoxBotSendChannel("Strategy switch was not queued: " switchRequest.message)
+                return
+            }
+            timing := RunningStrategy ? "after the current match reaches a safe restart point" : "for the next /start"
+            KronoxBotSendChannel("Queued **Strategy " switchRequest.slot "** (" switchRequest.name ") " timing ". Standard loadouts will auto-equip; Abstract XP slots remain protected.")
+        case "timescale":
+            timeScaleRequest := KronoxQueueRemoteTimeScale(argument)
+            if !timeScaleRequest.ok {
+                KronoxBotSendChannel(timeScaleRequest.message)
+                return
+            }
+            timing := RunningStrategy ? "the next match" : "the next /start"
+            KronoxBotSendChannel("Queued temporary **" timeScaleRequest.mode "** timescale for " timing ". The saved Settings value and strategy file are unchanged.")
+        case "modifiers":
+            modifierRequest := KronoxQueueRemoteModifiers(argument, argument2)
+            if !modifierRequest.ok {
+                KronoxBotSendChannel(modifierRequest.message)
+                return
+            }
+            if (modifierRequest.action = "reset") {
+                KronoxBotSendChannel("Cleared the temporary modifier override. The next match will use the strategy file's modifiers.")
+            } else {
+                timing := RunningStrategy ? "the next match" : "the next /start"
+                detail := modifierRequest.action = "clear" ? "no modifiers" : modifierRequest.names
+                KronoxBotSendChannel("Queued temporary modifiers for " timing ": **" detail "** (" modifierRequest.action "). The strategy file is unchanged.")
+            }
+        case "loadout":
+            KronoxBotSendChannel(KronoxBotLoadoutMessage())
+        case "best":
+            KronoxBotSendChannel(KronoxBotBestMessage())
+        default:
+            KronoxBotSendChannel("Unknown remote command was ignored.")
+    }
+}
+
+KronoxRemoteStart(*) {
+    global RunningStrategy
+    if !RunningStrategy
+        StartStrategy(0)
+}
+
+KronoxRemoteStop(*) {
+    global RunningStrategy
+    if RunningStrategy
+        StopStrategy(0)
+}
+
+KronoxQueueRemoteSafeStop() {
+    global StateFile
+
+    IniWrite(1, StateFile, "Remote", "SafeStop")
+    IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "Remote", "SafeStopRequestedAt")
+    WriteRuntimeLog("DISCORD", "Queued remote safe stop at the next run boundary.")
+}
+
+KronoxConsumeRemoteSafeStop() {
+    global StateFile
+
+    if (Integer(IniRead(StateFile, "Remote", "SafeStop", 0)) != 1)
+        return false
+    IniDelete(StateFile, "Remote", "SafeStop")
+    IniDelete(StateFile, "Remote", "SafeStopRequestedAt")
+    KronoxClearRemoteSessionRequests()
+    WriteRuntimeLog("DISCORD", "Applied remote safe stop at a run boundary.")
+    return true
+}
+
+KronoxClearRemoteRunOverrides() {
+    global StateFile
+
+    for key in ["RunTimeScaleMode", "RunModifierAction", "RunModifierNames", "RunOverrideRequestedAt"]
+        try IniDelete(StateFile, "Remote", key)
+}
+
+KronoxClearRemoteSessionRequests() {
+    global StateFile
+
+    KronoxClearRemoteRunOverrides()
+    for key in ["SafeStop", "SafeStopRequestedAt", "PendingStrategySlot", "PendingStrategyPath", "PendingStrategyRequestedAt", "ForceEquip"]
+        try IniDelete(StateFile, "Remote", key)
+}
+
+KronoxRemoteModifierCatalog() {
+    static catalog := Map(
+        "broke", "Broke", "exploding", "Exploding", "flying", "Flying", "fog", "Fog", "glass", "Glass",
+        "healthy", "Healthy", "hidden", "Hidden", "inflation", "Inflation", "jailed", "Jailed", "limitation", "Limitation",
+        "committed", "Committed", "quarantine", "Quarantine", "speedy", "Speedy",
+        "explosive", "Exploding", "exploding enemy", "Exploding", "exploding enemies", "Exploding",
+        "speedy enemy", "Speedy", "speedy enemies", "Speedy", "flying enemy", "Flying", "flying enemies", "Flying",
+        "hidden enemy", "Hidden", "hidden enemies", "Hidden", "healthy enemy", "Healthy", "healthy enemies", "Healthy",
+        "limitations", "Limitation")
+    return catalog
+}
+
+KronoxRemoteModifierList(text, requireNames := true) {
+    catalog := KronoxRemoteModifierCatalog()
+    names := []
+    seen := Map()
+    normalizedText := StrReplace(StrReplace(StrReplace(String(text), "`r`n", ","), "`n", ","), ";", ",")
+    for rawName in StrSplit(normalizedText, ",") {
+        key := RegExReplace(StrLower(Trim(rawName)), "\s+", " ")
+        if (key = "")
+            continue
+        if !catalog.Has(key)
+            return {ok: false, message: "Unknown modifier: " Trim(rawName) ". Use the exact TDS names, for example Exploding or Speedy."}
+        canonical := catalog[key]
+        canonicalKey := StrLower(canonical)
+        if !seen.Has(canonicalKey) {
+            seen[canonicalKey] := true
+            names.Push(canonical)
+        }
+    }
+    if (requireNames && names.Length = 0)
+        return {ok: false, message: "Provide one or more modifiers separated by commas, or choose the clear/reset action."}
+    return {ok: true, names: names, text: KronoxJoin(names)}
+}
+
+KronoxMergeRemoteModifiers(baseText, action, requestedNames := []) {
+    base := KronoxRemoteModifierList(baseText, false)
+    if !base.ok
+        return base
+    if (action = "set")
+        return {ok: true, text: KronoxJoin(requestedNames)}
+    if (action = "clear")
+        return {ok: true, text: ""}
+
+    requested := Map()
+    for name in requestedNames
+        requested[StrLower(name)] := true
+
+    merged := []
+    existing := Map()
+    for name in base.names {
+        key := StrLower(name)
+        if (action = "remove" && requested.Has(key))
+            continue
+        if !existing.Has(key) {
+            existing[key] := true
+            merged.Push(name)
+        }
+    }
+    if (action = "add") {
+        for name in requestedNames {
+            key := StrLower(name)
+            if !existing.Has(key) {
+                existing[key] := true
+                merged.Push(name)
+            }
+        }
+    }
+    return {ok: true, text: KronoxJoin(merged)}
+}
+
+KronoxSetRuntimeTimeScale(mode) {
+    global TimeScaleMode, UseTimeScale, TimeScaleMultiplier
+
+    mode := StrLower(Trim(mode))
+    if (mode = "off")
+        TimeScaleMode := "OFF", UseTimeScale := false, TimeScaleMultiplier := 1
+    else if (mode = "1.5x")
+        TimeScaleMode := "1.5x", UseTimeScale := true, TimeScaleMultiplier := 1.5
+    else if (mode = "2x")
+        TimeScaleMode := "2x", UseTimeScale := true, TimeScaleMultiplier := 2
+    else
+        return false
+    return true
+}
+
+KronoxQueueRemoteTimeScale(mode) {
+    global StateFile
+
+    normalized := StrLower(Trim(mode))
+    if (normalized = "off")
+        normalized := "OFF"
+    else if !(normalized = "1.5x" || normalized = "2x")
+        return {ok: false, message: "Choose /timescale mode:off, mode:1.5x, or mode:2x."}
+    IniWrite(normalized, StateFile, "Remote", "RunTimeScaleMode")
+    IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "Remote", "RunOverrideRequestedAt")
+    WriteRuntimeLog("DISCORD", "Queued temporary timescale override: " normalized)
+    return {ok: true, mode: normalized}
+}
+
+KronoxQueueRemoteModifiers(action, names) {
+    global StateFile
+
+    normalizedAction := StrLower(Trim(action))
+    if !(normalizedAction = "set" || normalizedAction = "add" || normalizedAction = "remove" || normalizedAction = "clear" || normalizedAction = "reset")
+        return {ok: false, message: "Choose a modifier action: set, add, remove, clear, or reset."}
+    if (normalizedAction = "reset") {
+        for key in ["RunModifierAction", "RunModifierNames"]
+            try IniDelete(StateFile, "Remote", key)
+        WriteRuntimeLog("DISCORD", "Cleared temporary modifier override.")
+        return {ok: true, action: "reset", names: ""}
+    }
+    parsed := (normalizedAction = "clear") ? {ok: true, text: ""} : KronoxRemoteModifierList(names)
+    if !parsed.ok
+        return parsed
+    IniWrite(normalizedAction, StateFile, "Remote", "RunModifierAction")
+    IniWrite(parsed.text, StateFile, "Remote", "RunModifierNames")
+    IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "Remote", "RunOverrideRequestedAt")
+    WriteRuntimeLog("DISCORD", "Queued temporary modifier override: " normalizedAction " " parsed.text)
+    return {ok: true, action: normalizedAction, names: parsed.text}
+}
+
+KronoxApplyRemoteRunOverrides() {
+    global StateFile, modifiers
+
+    remoteTimeScale := Trim(IniRead(StateFile, "Remote", "RunTimeScaleMode", ""))
+    if (remoteTimeScale != "")
+        KronoxSetRuntimeTimeScale(remoteTimeScale)
+
+    action := StrLower(Trim(IniRead(StateFile, "Remote", "RunModifierAction", "")))
+    if (action = "")
+        return
+    names := IniRead(StateFile, "Remote", "RunModifierNames", "")
+    parsed := (action = "clear") ? {ok: true, names: []} : KronoxRemoteModifierList(names)
+    if !parsed.ok {
+        WriteRuntimeLog("DISCORD", "Ignored invalid temporary modifier override: " parsed.message, "WARN")
+        return
+    }
+    merged := KronoxMergeRemoteModifiers(modifiers, action, parsed.names)
+    if !merged.ok {
+        WriteRuntimeLog("DISCORD", "Could not apply temporary modifier override: " merged.message, "WARN")
+        return
+    }
+    modifiers := merged.text
+    WriteRuntimeLog("DISCORD", "Applied temporary modifier override for this macro session: " (modifiers = "" ? "no modifiers" : modifiers))
+}
+
+KronoxQueueRemoteStrategySwitch(slot) {
+    global Strategy1Path, Strategy2Path, StateFile
+
+    if !(slot = 1 || slot = 2)
+        return {ok: false, message: "Only strategy slots 1 and 2 can be selected."}
+    strategyPath := (slot = 1) ? Trim(Strategy1Path) : Trim(Strategy2Path)
+    if (strategyPath = "" || !FileExist(strategyPath))
+        return {ok: false, message: "Strategy " slot " is empty or its file no longer exists."}
+
+    SplitPath(strategyPath, &strategyName)
+    IniWrite(slot, StateFile, "Remote", "PendingStrategySlot")
+    IniWrite(strategyPath, StateFile, "Remote", "PendingStrategyPath")
+    IniWrite(FormatTime(, "yyyy-MM-dd HH:mm:ss"), StateFile, "Remote", "PendingStrategyRequestedAt")
+    WriteRuntimeLog("DISCORD", "Queued remote strategy switch to slot " slot ": " strategyName)
+    return {ok: true, slot: slot, name: strategyName}
+}
+
+; Consume a remote request only at a run boundary. The selected path is saved
+; with the request, so a later UI edit cannot silently redirect the command.
+ConsumeKronoxRemoteStrategySwitch(&targetPath) {
+    global StateFile, Strategy1Path, Strategy2Path, CurrentRotationIndex, CurrentStratStartTime, CurrentRunCount
+
+    targetPath := ""
+    slotText := IniRead(StateFile, "Remote", "PendingStrategySlot", "")
+    if !RegExMatch(slotText, "^[12]$")
+        return false
+    slot := Integer(slotText)
+    requestedPath := Trim(IniRead(StateFile, "Remote", "PendingStrategyPath", ""))
+    fallbackPath := (slot = 1) ? Trim(Strategy1Path) : Trim(Strategy2Path)
+    strategyPath := (requestedPath != "") ? requestedPath : fallbackPath
+
+    if (strategyPath = "" || !FileExist(strategyPath)) {
+        WriteRuntimeLog("DISCORD", "Discarded queued strategy switch because the requested file is unavailable.", "WARN")
+        IniDelete(StateFile, "Remote", "PendingStrategySlot")
+        IniDelete(StateFile, "Remote", "PendingStrategyPath")
+        IniDelete(StateFile, "Remote", "PendingStrategyRequestedAt")
+        return false
+    }
+
+    CurrentRotationIndex := slot
+    CurrentStratStartTime := A_TickCount
+    CurrentRunCount := 0
+    IniWrite(slot, StateFile, "State", "CurrentRotationIndex")
+    IniWrite(A_TickCount, StateFile, "State", "CurrentStratStartTime")
+    IniWrite(0, StateFile, "State", "CurrentRunCount")
+    IniWrite(strategyPath, StateFile, "State", "Strategy")
+    IniWrite(1, StateFile, "Remote", "ForceEquip")
+    IniDelete(StateFile, "Remote", "PendingStrategySlot")
+    IniDelete(StateFile, "Remote", "PendingStrategyPath")
+    IniDelete(StateFile, "Remote", "PendingStrategyRequestedAt")
+    targetPath := strategyPath
+    SplitPath(strategyPath, &strategyName)
+    WriteRuntimeLog("DISCORD", "Applied queued remote strategy switch to slot " slot ": " strategyName)
+    return true
+}
+
+KronoxBotStatusMessage() {
+    global StateFile, AutorunStartTime, RunningStrategy
+
+    strategyPath := IniRead(StateFile, "State", "ActiveStrategyPath", IniRead(StateFile, "State", "Strategy", ""))
+    strategyName := IniRead(StateFile, "State", "ActiveStrategyName", "")
+    if (strategyName = "" && strategyPath != "")
+        SplitPath(strategyPath, &strategyName)
+    if (strategyName = "")
+        strategyName := "No strategy selected"
+
+    queueText := KronoxRemoteQueueSummary()
+    pendingText := (queueText != "") ? "`n**Remote queue:** " queueText : ""
+
+    if !RunningStrategy
+        return "**Kronox Macro:** stopped`n**Strategy:** " strategyName pendingText
+
+    wins := Integer(IniRead(StateFile, "State", "TotalTriumphs", 0))
+    losses := Integer(IniRead(StateFile, "State", "TotalLosses", 0))
+    coins := Integer(IniRead(StateFile, "State", "Coins", 0))
+    gems := Integer(IniRead(StateFile, "State", "Gems", 0))
+    xp := Integer(IniRead(StateFile, "State", "EXP", 0))
+    runtime := (AutorunStartTime > 0) ? FormatRuntime(AutorunStartTime) : "00:00"
+    phase := IniRead(StateFile, "Health", "Phase", "working")
+    detail := IniRead(StateFile, "Health", "Detail", "")
+    message := "**Kronox Macro:** running`n**Strategy:** " strategyName "`n**Phase:** " phase
+    if (detail != "")
+        message .= " — " detail
+    return message "`n**This run:** W " wins " | L " losses " | Coins " FormatStatsNumber(coins) " | Gems " FormatStatsNumber(gems) " | XP " FormatStatsNumber(xp) "`n**Runtime:** " runtime pendingText
+}
+
+KronoxRemoteQueueSummary() {
+    global StateFile
+
+    parts := []
+    pendingSlot := IniRead(StateFile, "Remote", "PendingStrategySlot", "")
+    if RegExMatch(pendingSlot, "^[12]$")
+        parts.Push("switch to Strategy " pendingSlot)
+    if (Integer(IniRead(StateFile, "Remote", "SafeStop", 0)) = 1)
+        parts.Push("safe stop after current match")
+    timeScale := Trim(IniRead(StateFile, "Remote", "RunTimeScaleMode", ""))
+    if (timeScale != "")
+        parts.Push("timescale " timeScale)
+    modifierAction := StrLower(Trim(IniRead(StateFile, "Remote", "RunModifierAction", "")))
+    if (modifierAction != "") {
+        modifierNames := Trim(IniRead(StateFile, "Remote", "RunModifierNames", ""))
+        modifierText := (modifierAction = "clear") ? "no modifiers" : modifierAction " " modifierNames
+        parts.Push("modifiers " modifierText)
+    }
+    return parts.Length > 0 ? KronoxJoin(parts, " • ") : ""
+}
+
+KronoxRemoteQueueMessage() {
+    summary := KronoxRemoteQueueSummary()
+    return "**Kronox remote queue:** " (summary != "" ? summary : "No pending remote actions.")
+}
+
+KronoxBotHealthMessage() {
+    global StateFile, RunningStrategy, KronoxBotGatewayPID
+
+    phase := IniRead(StateFile, "Health", "Phase", "idle")
+    detail := IniRead(StateFile, "Health", "Detail", "")
+    ownerPid := IniRead(StateFile, "Health", "OwnerPID", "unknown")
+    updatedAt := IniRead(StateFile, "Health", "UpdatedAt", "not reported")
+    gatewayState := (KronoxBotGatewayPID && ProcessExist(KronoxBotGatewayPID)) ? "connected" : "not running"
+    message := "**Kronox health:** " (RunningStrategy ? "running" : "stopped") "`n**Phase:** " phase
+    if (detail != "")
+        message .= " — " detail
+    return message "`n**Last health update:** " updatedAt "`n**Macro PID:** " ownerPid " | **Remote gateway:** " gatewayState
+}
+
+KronoxBotLoadoutMessage() {
+    global StateFile, Strategy1Path
+
+    strategyPath := IniRead(StateFile, "State", "ActiveStrategyPath", IniRead(StateFile, "State", "Strategy", ""))
+    if (strategyPath = "" || !FileExist(strategyPath))
+        strategyPath := Strategy1Path
+    if (strategyPath = "" || !FileExist(strategyPath))
+        return "No readable strategy is selected, so no loadout can be previewed."
+    SplitPath(strategyPath, &strategyName)
+    mapName := IniRead(strategyPath, "Settings", "map", "Unknown")
+    modeName := IniRead(strategyPath, "Settings", "difficulty", "Unknown")
+    towers := Trim(IniRead(strategyPath, "Settings", "requiredTowers", ""))
+    abstractSlots := Trim(IniRead(strategyPath, "Settings", "abstractSlots", IniRead(strategyPath, "Settings", "abstractSlot", "")))
+    message := "**Loadout:** " strategyName "`n**Map / mode:** " mapName " / " modeName "`n**Towers:** " (towers != "" ? towers : "Not listed")
+    if (abstractSlots != "")
+        message .= "`n**Abstract slots:** " abstractSlots " (protected from ordinary auto-equip)"
+    return message
+}
+
+KronoxBotBestMessage() {
+    return "**Kronox best recorded efficiency**`n**Coins:** " FindBestStatsBreakdown("Map_", "Coins") "`n**XP:** " FindBestStatsBreakdown("Map_", "EXP") "`n**Modifier set:** " FindBestModifierROI()
+}
+
+KronoxBotEscapeJson(text) {
+    escaped := StrReplace(String(text), "\", "\\")
+    escaped := StrReplace(escaped, "`r`n", "\n")
+    escaped := StrReplace(escaped, "`n", "\n")
+    escaped := StrReplace(escaped, "`r", "\n")
+    return StrReplace(escaped, Chr(34), "\" Chr(34))
+}
+
+KronoxBotSendChannel(text) {
+    global KronoxBotToken, KronoxBotChannelID
+
+    if (KronoxBotToken = "" || KronoxBotChannelID = "")
+        return false
+    q := Chr(34)
+    payload := "{" q "content" q ":" q KronoxBotEscapeJson(text) q "," q "allowed_mentions" q ":{" q "parse" q ":[]}}"
+    result := KronoxDiscordBotApiRequest("POST", "channels/" KronoxBotChannelID "/messages", KronoxBotToken, payload)
+    if !result.ok
+        WriteRuntimeLog("DISCORD", "Could not send remote reply (HTTP " result.status ").", "WARN")
+    return result.ok
+}
+
+KronoxBotSendScreenshot(description := "Kronox remote screenshot") {
+    global KronoxBotToken, KronoxBotChannelID
+
+    if (KronoxBotToken = "" || KronoxBotChannelID = "")
+        return false
+    pBitmap := 0
+    try {
+        pBitmap := Gdip_BitmapFromScreen()
+        q := Chr(34)
+        payload := "{" q "content" q ":" q KronoxBotEscapeJson(description) q "," q "attachments" q ":[{" q "id" q ":0," q "filename" q ":" q "screenshot.png" q "}]}"
+        fields := [
+            Map("name", "payload_json", "content-type", "application/json", "content", payload),
+            Map("name", "files[0]", "filename", "screenshot.png", "content-type", "image/png", "pBitmap", pBitmap)
+        ]
+        CreateFormData(&postdata, &contentType, fields)
+        result := KronoxDiscordBotApiRequest("POST", "channels/" KronoxBotChannelID "/messages", KronoxBotToken, postdata, contentType)
+        if !result.ok
+            WriteRuntimeLog("DISCORD", "Could not send remote screenshot (HTTP " result.status ").", "WARN")
+        return result.ok
+    } catch Error as err {
+        WriteRuntimeLog("DISCORD", "Remote screenshot failed: " err.Message, "WARN")
+        return false
+    } finally {
+        if pBitmap
+            try Gdip_DisposeImage(pBitmap)
+    }
+}
+
 TestWebhook(ctrl, *) {
     global WebhookLink
     v := MainGui.Submit(false)
@@ -6108,8 +7140,8 @@ NormalizeKey(keyName) {
 SaveAllSettings(ctrl, *) {
     global ChainKey, BeatKey, CaravanKey, SwatVanKey, CancelPlacementKey, TimeScaleMode, UseTimeScale
     global TimeScaleMultiplier, VipLink, UseVipServer, AlwaysOnTop, DebugConsole
-    global PotatoMode, UseRestartBtn, UsePlayAgainBtn, CheckTheMap
-    global PlaceTowerKey, UpgradeTowerKey, AlignCameraKey, ChangeDJTrackKey
+    global PotatoMode, LegacyMode, UpgradeDelay, UseRestartBtn, UsePlayAgainBtn, CheckTheMap
+    global PlaceTowerKey, UpgradeTowerKey, AlignCameraKey, ChangeDJTrackKey, ChangeTargetsKey
     global SellTowerKey, DeleteTowerRecordingKey, RecordInputsKey
     global SettingsFile
     global DefaultMouseSpeed, MouseDelay, KeyDelay
@@ -6170,6 +7202,7 @@ SaveAllSettings(ctrl, *) {
     tempRecordInputsKey := NormalizeKey(RecordInputsKeyCtrl.Value)
     tempHoloKey := NormalizeKey(HoloKeyCtrl.Value)
     tempUseRaiseDeadKey := NormalizeKey(UseRaiseDeadKeyCtrl.Value)
+    tempChangeTargetsKey := NormalizeKey(ChangeTargetsKeyCtrl.Value)
 
     UsedKeys := Map()
     
@@ -6192,6 +7225,7 @@ SaveAllSettings(ctrl, *) {
         {val: tempDeleteTowerRecordingKey, name: "Delete Tower Recording"},
         {val: tempRecordInputsKey, name: "Record Inputs"},
         {val: tempHoloKey, name: "Hologram Tower"},
+        {val: tempChangeTargetsKey, name: "Change Targets"},
         {val: tempUseRaiseDeadKey, name: "Raise the Dead"}
     ]
 
@@ -6231,7 +7265,7 @@ SaveAllSettings(ctrl, *) {
     UpgradeTowerGBKey := tempUpgradeTowerGBKey
 
     oldRecordingKeys := [PlaceTowerKey, UpgradeTowerKey, AlignCameraKey, ChangeDJTrackKey,
-        SellTowerKey, DeleteTowerRecordingKey, RecordInputsKey, HoloKey, UseRaiseDeadKey]
+        SellTowerKey, DeleteTowerRecordingKey, RecordInputsKey, HoloKey, ChangeTargetsKey, UseRaiseDeadKey]
 
     
     PlaceTowerKey := tempPlaceTowerKey
@@ -6242,6 +7276,7 @@ SaveAllSettings(ctrl, *) {
     DeleteTowerRecordingKey := tempDeleteTowerRecordingKey
     RecordInputsKey := tempRecordInputsKey
     HoloKey := tempHoloKey
+    ChangeTargetsKey := tempChangeTargetsKey
     UseRaiseDeadKey := tempUseRaiseDeadKey
     RegisterRecordingHotkeys(oldRecordingKeys)
 
@@ -6251,6 +7286,12 @@ SaveAllSettings(ctrl, *) {
     AlwaysOnTop := AlwaysOnTopCtrl.Value
     DebugConsole := DebugConsoleCtrl.Value
     PotatoMode := PotatoModeCtrl.Value
+    LegacyMode := LegacyModeCtrl.Value
+    try enteredUpgradeDelay := Integer(UpgradeDelayCtrl.Value)
+    catch Error
+        enteredUpgradeDelay := 190
+    UpgradeDelay := Max(50, Min(2000, enteredUpgradeDelay))
+    UpgradeDelayCtrl.Value := UpgradeDelay
     UseRestartBtn := UseRestartBtnCtrl.Value
     UsePlayAgainBtn := UsePlayAgainBtnCtrl.Value
     CheckTheMap := CheckTheMapCtrl.Value
@@ -6277,6 +7318,8 @@ SaveAllSettings(ctrl, *) {
     IniWrite(UseVipServer, SettingsFile, "Options", "UseVipServer")
     IniWrite(DebugConsole, SettingsFile, "Options", "DebugConsole")
     IniWrite(PotatoMode, SettingsFile, "Options", "PotatoMode")
+    IniWrite(LegacyMode, SettingsFile, "Options", "LegacyMode")
+    IniWrite(UpgradeDelay, SettingsFile, "Options", "UpgradeDelay")
     IniWrite(AlwaysOnTop, SettingsFile, "Options", "AlwaysOnTop")
     IniWrite(UseRestartBtn, SettingsFile, "Options", "UseRestartBtn")
     IniWrite(UsePlayAgainBtn, SettingsFile, "Options", "UsePlayAgainBtn")
@@ -6295,6 +7338,7 @@ SaveAllSettings(ctrl, *) {
     IniWrite(SellTowerKey, SettingsFile, "RecordingHotkeys", "SellTowerKey")
     IniWrite(DeleteTowerRecordingKey, SettingsFile, "RecordingHotkeys", "DeleteTowerRecordingKey")
     IniWrite(RecordInputsKey, SettingsFile, "RecordingHotkeys", "RecordInputsKey")
+    IniWrite(ChangeTargetsKey, SettingsFile, "RecordingHotkeys", "ChangeTargetsKey")
     IniWrite(UseRaiseDeadKey, SettingsFile, "RecordingHotkeys", "RaiseDeadKey")
     IniWrite(HoloKey, SettingsFile, "RecordingHotkeys", "HoloKey")
 
@@ -6542,6 +7586,10 @@ LoadStrategyFile(file) {
     AutoSkipStopWave := IsNumber(autoSkipStopSetting) ? Max(0, Integer(autoSkipStopSetting)) : 0
     AbilitySpam := IniRead(file, "Settings", "abilitySpam", "ON")
     modifiers := IniRead(file, "Settings", "modifiers", "")
+    ; Remote overrides deliberately live only in state.ini. They are reapplied
+    ; after every strategy load so they survive safe reloads without ever
+    ; changing the source .strat file or the user's saved Settings choice.
+    KronoxApplyRemoteRunOverrides()
     CloneFailurePolicy := IniRead(file, "Settings", "cloneFailurePolicy", "")
     cloneAttemptsSetting := IniRead(file, "Settings", "engineerCloneMaxAttempts", "3")
     EngineerCloneMaxAttempts := IsNumber(cloneAttemptsSetting) ? Max(1, Integer(cloneAttemptsSetting)) : 3
@@ -6586,7 +7634,7 @@ LoadStrategyFile(file) {
     for i, step in RecordedSteps {
         if RegExMatch(step, "i)SpawnTower\s*\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(.*?)\s*\)", &m) {
             towerID := Trim(m[1])
-            Towers[towerID] := {x: 0, y: 0, slot: 0, level: 0, path: 0, pathLevel: 0}
+            Towers[towerID] := {x: 0, y: 0, slot: 0, level: 0, path: 0, pathLevel: 0, target: "First Enemy"}
         }
         if RegExMatch(step, "i)UpgradeTower\s*\(\s*([^,]+?)\s*(?:,\s*(?:false|true)\s*)?(?:,\s*\d+\s*)?(?:,\s*(\d+)\s*)?(?:,\s*(\d+)\s*)?\s*\)", &m) {
             tid := Trim(m[1])
@@ -6665,16 +7713,34 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
     global SettingsFile, requiredTowers, modifiers, LastOpenedTowerID
     global LastSkipCheck, SKIP_CHECK_INTERVAL, AutorunStartTime, StateFile
     global WebhookEnabled, CurrentStratStartTime, CurrentRunCount, gamemap, AbstractTowerSlots, AbstractTowerSlot
-    global StrategyHotbarRemapSummary, EvolutionQueueAutoEquip, HotbarSafetyMisses, HotbarSafetyRecoveryActive
+    global StrategyHotbarRemapSummary, EvolutionQueueAutoEquip, HotbarSafetyMisses, HotbarSafetyRecoveryActive, TimescaleActive
 
     if (RunningStrategy != true)
         return
+
+    if KronoxConsumeRemoteSafeStop() {
+        KronoxBotSendChannel("Remote safe stop reached a run boundary. The macro is stopping before a new match begins.")
+        SetTimer(KronoxRemoteStop, -10)
+        return
+    }
+
+    ; A new match has not activated its ticket yet, even if the prior match did.
+    TimescaleActive := false
 
     If (!skiprestart)
     	isDisconnected()
 
     switched := false
-    if (RotateStrategies) {
+    remoteSwitchPath := ""
+    if ConsumeKronoxRemoteStrategySwitch(&remoteSwitchPath) {
+        LoadStrategyFile(remoteSwitchPath)
+        stratName := remoteSwitchPath
+        switched := true
+    } else if (Integer(IniRead(StateFile, "Remote", "ForceEquip", 0)) = 1) {
+        stratName := IniRead(StateFile, "State", "Strategy", "")
+        switched := true
+    }
+    if (RotateStrategies && !switched) {
         SwapAmount := Integer(IniRead(SettingsFile, "Options", "SwapAmount", 4))
         SwapUnit := IniRead(SettingsFile, "Options", "SwapUnit", "Runs")
         
@@ -6721,6 +7787,7 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
         LogToConsole("Modifiers: " modifiers)
 
     if (switched) {
+        IniDelete(StateFile, "Remote", "ForceEquip")
         time := FormatTime(, "HH:mm:ss")
         SplitPath(stratName, &fileName)
         startInfo := "[" time "] Switched strategy to: " fileName "`n"
@@ -6935,6 +8002,14 @@ ExecuteStep(step) {
         UpgradeTower(Trim(m[1]), (m[2]="true"), (m[3]!="") ? Integer(m[3]) : 1, (m[4]!="") ? Integer(m[4]) : 0, (m[5]!="") ? Integer(m[5]) : 4)
         return
     }
+    if RegExMatch(step, "i)^ToggleAutoskip\s*\(\s*\)$") {
+        ToggleAutoskip()
+        return
+    }
+    if RegExMatch(step, "i)^ChangeTargets\s*\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)$", &m) {
+        ChangeTargets(Trim(m[1]), Trim(m[2], ' "'))
+        return
+    }
     
     if RegExMatch(step, "i)CloneTower\s*\(\s*([^,]+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)", &m) {
         CloneTower(Trim(m[1]), Integer(m[2]), Integer(m[3]), Integer(m[4]))
@@ -6976,6 +8051,7 @@ ExecuteStep(step) {
     if RegExMatch(step, "i)^Click\s*\(\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*(.+?))?\s*\)$", &m) {
         button := InStr(m[3], "Right") ? "Right" : "Left"
         Click(ScaleX(m[1]) " " ScaleY(m[2]) " " button)
+        VerifyTowerHotbarAfterRiskyClick("recorded raw click step")
         return
     }
     if RegExMatch(step, 'i)^Send\s*\(\s*"([^"]+)"\s*,\s*hold:=(\d+)\s*\)$', &m) {
@@ -7024,7 +8100,12 @@ LowerGraphics() {
 }
 
 EquipTowers(towers, allowAbstractQueue := false) {
-    global AbstractTowerSlots, AbstractTowerSlot
+    global AbstractTowerSlots, AbstractTowerSlot, LegacyMode
+
+    if (LegacyMode = 1 || LegacyMode = "1") {
+        LogToConsole("Auto Equip skipped: Legacy image mode does not support this advanced detection path.", true, false)
+        return false
+    }
 
     if (AbstractTowerSlots.Length > 0 && !allowAbstractQueue) {
         LogToConsole("Auto Equip skipped: abstract hotbar slots " AbstractTowerSlotsToText(AbstractTowerSlots) " must keep the player's chosen XP towers equipped.", true, false)
@@ -7053,7 +8134,7 @@ EquipTowers(towers, allowAbstractQueue := false) {
             MouseClick()
             break
         } 
-        if (A_TickCount - StartTime > 4000) {
+        if (A_TickCount - StartTime > 6000) {
             break
         }
         Sleep(500)
@@ -7076,7 +8157,7 @@ EquipTowers(towers, allowAbstractQueue := false) {
             savedCloseY := resclose.y
             break
         } 
-        if (A_TickCount - StartTime > 4000)
+        if (A_TickCount - StartTime > 6000)
             break
         Sleep(500)
     }
@@ -7107,7 +8188,7 @@ EquipTowers(towers, allowAbstractQueue := false) {
                 break
             } 
 
-            if (A_TickCount - StartTime > 4000)
+            if (A_TickCount - StartTime > 6000)
                 break
             Sleep(500)
         }
@@ -8761,6 +9842,57 @@ EnsureTowerHotbarBeforeSlotInput(slotNumber, towerID := "") {
     return false
 }
 
+VerifyTowerHotbarAfterRiskyClick(actionName) {
+    inspection := InspectTowerHotbarBeforeSlotInput()
+    if inspection.safe
+        return true
+
+    WriteRuntimeLog("HOTBAR", "Unsafe hotbar state after " actionName ": " inspection.reason ".", "ERROR")
+    TriggerUnsafeHotbarRecovery("unsafe hotbar state after " actionName, inspection)
+    return false
+}
+
+ClickCloneSourceTowerSafely(towerID) {
+    global Towers
+
+    if !Towers.Has(towerID)
+        return false
+
+    tower := Towers[towerID]
+    sourceX := tower.x
+    sourceY := tower.y
+    offsets := [0, -2, 2, -4, 4, -7, 7]
+    started := A_TickCount
+
+    while (A_TickCount - started < 6000) {
+        for offsetY in offsets {
+            probeY := sourceY + ScaleY(offsetY)
+            MouseMove(sourceX, probeY)
+            Sleep(220)
+
+            tooltipX := sourceX + ScaleX(69)
+            tooltipY := probeY - ScaleY(59)
+            try towerHovered := PixelSearch(&foundX, &foundY,
+                tooltipX - ScaleX(20), tooltipY - ScaleY(5),
+                tooltipX + ScaleX(10), tooltipY + ScaleY(5), 0x99BFD4, 8)
+            catch Error
+                towerHovered := false
+
+            if towerHovered {
+                MouseClick()
+                Sleep(80)
+                if !VerifyTowerHotbarAfterRiskyClick("validated clone source click for " towerID)
+                    return false
+                return true
+            }
+        }
+        Sleep(100)
+    }
+
+    WriteRuntimeLog("CLONE", "Skipped an unverified clone-source click for " towerID ".", "WARN")
+    return false
+}
+
 
 SpawnTower(X, Y, slotNumber, towerID) {
     global Towers, LastOpenedTowerID, CancelPlacementKey, canUseAbility, UseNumbersForHotbar, Slots
@@ -8816,13 +9948,15 @@ SpawnTower(X, Y, slotNumber, towerID) {
         MouseMove(X, Y, A_DefaultMouseSpeed)
         Sleep((PotatoMode = 1) ? 100 : 40)
         MouseClick()
+        if !VerifyTowerHotbarAfterRiskyClick("tower placement for " towerID)
+            return false
         Sleep(100)
         SendGameplayKey(CancelPlacementKey, "Cancel placement")
 
         placedSuccessfully := waitForTowerUI(&resV2)
 
         if (placedSuccessfully) {
-            Towers[towerID] := {x: X, y: TowerY, slot: Integer(slotNumber), level: 0, path: 0, pathLevel: 0}
+            Towers[towerID] := {x: X, y: TowerY, slot: Integer(slotNumber), level: 0, path: 0, pathLevel: 0, target: "First Enemy"}
             LogToConsole("Tower " towerID " placed successfully")
             LastOpenedTowerID := towerID
             break
@@ -8846,7 +9980,7 @@ SpawnTower(X, Y, slotNumber, towerID) {
 
                 placedSuccessfully := waitForTowerUI(&resV2)
                 if (placedSuccessfully) {
-                    Towers[towerID] := {x: X, y: TowerY, slot: Integer(slotNumber), level: 0, path: 0, pathLevel: 0}
+                    Towers[towerID] := {x: X, y: TowerY, slot: Integer(slotNumber), level: 0, path: 0, pathLevel: 0, target: "First Enemy"}
                     LogToConsole("Tower " towerID " placed successfully")
                     LastOpenedTowerID := towerID
                     break
@@ -8878,11 +10012,13 @@ SpawnTower(X, Y, slotNumber, towerID) {
                     MouseMove(newX, newY, A_DefaultMouseSpeed)
                     Sleep((PotatoMode = 1) ? 100 : 40)
                     MouseClick()
+                    if !VerifyTowerHotbarAfterRiskyClick("tower placement offset retry for " towerID)
+                        return false
                     Sleep(100)
 
                     placedSuccessfully := waitForTowerUI(&resV2)
                     if (placedSuccessfully) {
-                        Towers[towerID] := {x: newX, y: newY, slot: Integer(slotNumber), level: 0, path: 0, pathLevel: 0}
+                        Towers[towerID] := {x: newX, y: newY, slot: Integer(slotNumber), level: 0, path: 0, pathLevel: 0, target: "First Enemy"}
                         LogToConsole("Tower " towerID " placed successfully")
                         LastOpenedTowerID := towerID
                         break 2
@@ -8955,7 +10091,7 @@ SellTower(towerID) {
 
 UpgradeTower(towerID, skipOpen := false, totalUpgrades := 1, path := 0, pathLevel := 0) {
     global Towers, unfocusX, unfocusY, LastOpenedTowerID, needtocheckTowerUI
-    global PotatoMode, Recording, RecordedSteps, Commander, canUseAbility
+    global PotatoMode, UpgradeDelay, Recording, RecordedSteps, Commander, canUseAbility
 
     static resV2 := 0
     static resV1 := 0
@@ -9090,7 +10226,7 @@ UpgradeTower(towerID, skipOpen := false, totalUpgrades := 1, path := 0, pathLeve
                 Click(UpgradeX, UpgradeY)
             }
 
-            Sleep((PotatoMode = 1) ? 250 : 190)
+            Sleep(Max(UpgradeDelay, (PotatoMode = 1) ? 250 : 50))
 
             Towers[towerID].level += 1
             upgradesDone++
@@ -10601,6 +11737,7 @@ HandleExit(ExitReason, ExitCode) {
     global StateFile, SettingsFile, RunningStrategy
 
     try SuspendAutomationInput("process-exit:" ExitReason)
+    try StopKronoxDiscordBot()
 
     if (RunningStrategy) {
         KillSubmacros()
@@ -10622,6 +11759,7 @@ HandleExit(ExitReason, ExitCode) {
             IniDelete(StateFile, "State", "RunAborted")
             IniDelete(StateFile, "State", "Timescale")
             IniDelete(StateFile, "State", "TimeWhenStartedPlaying")
+            KronoxClearRemoteSessionRequests()
         }
     }
 }

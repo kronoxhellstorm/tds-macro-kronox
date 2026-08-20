@@ -1,14 +1,15 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
+#Include "%A_ScriptDir%\..\lib\TowerXP.ahk"
 #Include "%A_ScriptDir%\..\lib\KronoxFeatures.ahk"
 
 try {
     message := RunHotbarHotkeySmoke()
-    OutputDebug("PASS " message)
+    FileAppend("PASS " message "`n", "*")
     ExitApp(0)
 } catch Error as err {
-    OutputDebug("FAIL " err.Message)
+    FileAppend("FAIL " err.Message "`n", "*")
     ExitApp(1)
 }
 
@@ -49,6 +50,14 @@ if !InStr(mainSource, 'SendGameplayKey(keySpec, actionName := "gameplay action")
     throw Error("Configured gameplay key sends bypass strict hotbar validation.")
 if !InStr(mainSource, 'SanitizeGameplayKeyBinding(keySpec, fallback, iniName)')
     throw Error("Persisted TDS keybinds are not migrated away from T.")
+if !InStr(mainSource, 'ClickCloneSourceTowerSafely(towerID)')
+    throw Error("Clone source clicks are not hover-validated.")
+if !InStr(mainSource, 'Skipped an unverified clone-source click')
+    throw Error("Clone source validation still allows a silent blind-click fallback.")
+if !InStr(mainSource, 'VerifyTowerHotbarAfterRiskyClick(actionName)')
+    throw Error("Late-game mouse clicks do not immediately verify the tower hotbar.")
+if !InStr(mainSource, 'Hotkey("$*t", BlockTowerHotbarToggle, "On")')
+    throw Error("The direct T hotbar-toggle blocker is missing.")
 
 consumableStart := InStr(mainSource, 'UseBudgetedConsumable(x, y, name := "Consumable")')
 consumableEnd := InStr(mainSource, "LowerGraphics()",, consumableStart)
