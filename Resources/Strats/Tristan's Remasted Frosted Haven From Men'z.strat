@@ -13,6 +13,7 @@ moveDirection=S
 moveDuration=1500
 cloneFailurePolicy=deferEngineerRequireJuggernaut
 engineerCloneMaxAttempts=3
+juggernautCloneMaxAttempts=5
 
 [DO NOT EDIT]
 width=1920

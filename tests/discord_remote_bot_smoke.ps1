@@ -46,7 +46,7 @@ if ($gatewaySource.IndexOf("Invoke-DiscordBotApi -Method 'PUT'", [System.StringC
 if ($gatewaySource.IndexOf('Discord rate limit on', [System.StringComparison]::Ordinal) -lt 0) {
     throw 'Discord gateway does not back off after HTTP 429 responses.'
 }
-foreach ($marker in @("title = 'Kronox Command Queue'", "name = 'over Kronox Edition macro'", 'type = 3')) {
+foreach ($marker in @("title = 'Kronox Command Queue'", "name = 'Watching over Kronox Edition macro'", 'type = 3')) {
     if ($gatewaySource.IndexOf($marker, [System.StringComparison]::Ordinal) -lt 0) {
         throw "Discord gateway is missing presentation marker: $marker"
     }

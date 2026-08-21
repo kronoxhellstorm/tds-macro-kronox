@@ -321,7 +321,10 @@ function Run-DiscordGateway {
                 properties = @{ os = 'windows'; browser = 'kronox-ultimate-macro'; device = 'kronox-ultimate-macro' }
                 presence = @{
                     since = $null
-                    activities = @(@{ name = 'over Kronox Edition macro'; type = 3 })
+                    # Some Discord surfaces omit the activity-type prefix and
+                    # render only the raw name. Keep the complete phrase here
+                    # so the member list never degrades to "over Kronox…".
+                    activities = @(@{ name = 'Watching over Kronox Edition macro'; type = 3 })
                     status = 'online'
                     afk = $false
                 }

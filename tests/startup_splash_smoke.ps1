@@ -15,6 +15,9 @@ if (-not (Test-Path -LiteralPath $intro)) { throw "Missing startup GIF at $intro
 
 $source = Get-Content -LiteralPath $main -Raw
 foreach ($marker in @(
+    'ShouldShowStartupSplash()',
+    'KRONOX_STARTUP_SPLASH_SHOWN',
+    'if ShouldShowStartupSplash()',
     'ShowStartupSplash()',
     'FinishStartupSplash()',
     'FinishStartupSplash(minimumVisibleMs := 3000)',
@@ -39,4 +42,4 @@ try {
     $image.Dispose()
 }
 
-Write-Output "PASS: centered startup splash uses a 3-second branded progress sequence and a 784x442 animated GIF ($frames frames)."
+Write-Output "PASS: first-launch-only centered startup splash uses a 3-second branded progress sequence and a 784x442 animated GIF ($frames frames)."

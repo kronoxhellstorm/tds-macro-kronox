@@ -43,7 +43,7 @@ if (A_PtrSize == 4) {
 #Include "%A_ScriptDir%\lib\KronoxFeatures.ahk"
 #Include "%A_ScriptDir%\submacros\updater.ahk"
 
-ver := "1.3.3-kronox.11"
+ver := "1.3.3-kronox.12"
 ; Kronox's Edition checks only its own releases and never falls back to upstream builds.
 global ForkUpdateRepository := "kronoxhellstorm/tds-macro-kronox"
 
@@ -149,6 +149,17 @@ global StartupSplashGui := 0
 global StartupSplashBrowser := 0
 global StartupSplashStartTick := 0
 
+ShouldShowStartupSplash() {
+    ; Reload() and the watchdog inherit this process environment. That makes
+    ; the splash exclusive to the user's original app launch while keeping it
+    ; hidden across match loops, safe reloads, and crash recovery.
+    markerName := "KRONOX_STARTUP_SPLASH_SHOWN"
+    if (EnvGet(markerName) = "1")
+        return false
+    EnvSet(markerName, "1")
+    return true
+}
+
 ShowStartupSplash() {
     global StartupSplashGui, StartupSplashBrowser, StartupSplashStartTick, ver
 
@@ -226,7 +237,8 @@ A_MaxHotkeysPerInterval := 9999
 pToken := Gdip_Startup()
 OnExit(CleanupGdip)
 OnExit(HandleExit)
-ShowStartupSplash()
+if ShouldShowStartupSplash()
+    ShowStartupSplash()
 
 global AppDataOpt := A_AppData "\Ultimate_Macro\Options"
 global SettingsFile := AppDataOpt "\Settings.tds"
@@ -369,7 +381,11 @@ global StrategyWidth := 1920
 global StrategyHeight := 1090
 global CloneFailurePolicy := ""
 global EngineerCloneMaxAttempts := 3
+global JuggernautCloneMaxAttempts := 5
 global CloneRetryDelayMs := 5000
+global Wave40JuggernautPriorityRequested := false
+global Wave40JuggernautPriorityInjected := false
+global Wave40JuggernautLastProbeTick := 0
 
 global Slots := [
     ScaleX(800) ", " ScaleY(960), 
@@ -2362,8 +2378,14 @@ Hoverwatchdog(*) {
         
     ; The strategy library rebuilds its child window when a filter or favorite changes.
     ; Refreshing this handle keeps hover hit-testing attached to the current card list.
-    if (IsSet(ChildGui) && IsObject(ChildGui))
-        hChild := ChildGui.Hwnd
+    hChild := 0
+    if (IsSet(ChildGui) && IsObject(ChildGui)) {
+        ; Destroyed Gui objects remain objects, but reading Hwnd throws until
+        ; the strategy library has installed its replacement window.
+        try hChild := ChildGui.Hwnd
+        catch
+            hChild := 0
+    }
     
     oldMode := A_CoordModeMouse
     CoordMode("Mouse", "Screen")
@@ -6045,10 +6067,16 @@ CloneTower(towerId, x, y, wait := 0, maxAttempts := 0) {
         y2 := Round(h * 0.3)
 
         if (ImageSearch(&fx,&fy,x1,y1,x2,y2, "*Trans000000 *50 " A_WorkingDir "/Resources/hologram_tower_cooldown.png") || ReadMessage(["hologram", "ability", "is on", "cooldown", "hol%ram%", "ility"])) {
-            LogToConsole("Failed to clone " towerId "! (hologram cooldown) Retrying again in " retryDelayText " seconds...")
+            ; Cooldown is availability, not a failed clone. It must never use
+            ; the Engineer/Juggernaut retry budget or cause a normal defer.
+            attempts := Max(0, attempts - 1)
+            LogToConsole("Waiting to clone " towerId " (hologram cooldown; retry budget unchanged). Retrying in " retryDelayText " seconds...")
             KronoxProfilerRetry("CloneTower " towerId, "hologram cooldown")
-            if (maxAttempts > 0 && attempts >= maxAttempts) {
-                LogToConsole("Clone " towerId " reached its " maxAttempts "-attempt limit; deferring this step.", true)
+            ; The sole exception is the explicit wave-40 Juggernaut preemption:
+            ; an Engineer yields without consuming an attempt so the pending
+            ; Juggernaut step can run first, then the Engineer returns later.
+            if RequestWave40JuggernautPriorityFromCooldown(towerId) {
+                LogToConsole("Wave 40 detected during Engineer cooldown; yielding this Engineer step for Juggernaut priority.", true)
                 canUseAbility := true
                 return false
             }
@@ -7681,7 +7709,7 @@ LoadStrategyFile(file) {
     global AdvancedAutoSkip, AdvancedSkipWaves, AdvancedSkipWaveSet
     global StrategyHotbarSlotMap, StrategyHotbarRemapSummary
     global modifiers, Commander, StrategyWidth, StrategyHeight
-    global CloneFailurePolicy, EngineerCloneMaxAttempts, CloneRetryDelayMs
+    global CloneFailurePolicy, EngineerCloneMaxAttempts, JuggernautCloneMaxAttempts, CloneRetryDelayMs
     global AbstractTowerSlots, AbstractTowerSlot, AbstractPlacementMax, AbstractPlacementLimit
 
     Towers := Map()
@@ -7739,6 +7767,8 @@ LoadStrategyFile(file) {
     CloneFailurePolicy := IniRead(file, "Settings", "cloneFailurePolicy", "")
     cloneAttemptsSetting := IniRead(file, "Settings", "engineerCloneMaxAttempts", "3")
     EngineerCloneMaxAttempts := IsNumber(cloneAttemptsSetting) ? Max(1, Integer(cloneAttemptsSetting)) : 3
+    juggernautAttemptsSetting := IniRead(file, "Settings", "juggernautCloneMaxAttempts", "5")
+    JuggernautCloneMaxAttempts := IsNumber(juggernautAttemptsSetting) ? Max(1, Integer(juggernautAttemptsSetting)) : 5
     cloneRetrySetting := IniRead(file, "Settings", "cloneRetryDelayMs", "5000")
     CloneRetryDelayMs := IsNumber(cloneRetrySetting) ? Max(250, Min(10000, Integer(cloneRetrySetting))) : 5000
 
@@ -8011,8 +8041,9 @@ RunStrategy(stratFile := "", skipRestart := false, equip := false) {
 
 PlayStrategy() {
     global canUseAbility, MultiplayerEnabled, StateFile, gamemap, InputAutomationSuspended
-    global CloneFailurePolicy, EngineerCloneMaxAttempts, CloneRetryDelayMs
+    global CloneFailurePolicy, EngineerCloneMaxAttempts, JuggernautCloneMaxAttempts, CloneRetryDelayMs
     global AutoSkipSuccessfulCount, AutoSkipLastDetectedWave, AutoSkipBlockLogged, AdvancedLastSkippedWave, AdvancedPendingSkipWave
+    global Wave40JuggernautPriorityRequested, Wave40JuggernautPriorityInjected, Wave40JuggernautLastProbeTick
 
     activeRunId := BeginTrackedRun()
     ResumeAutomationInput("strategy-playback")
@@ -8032,9 +8063,13 @@ PlayStrategy() {
 
     executionSteps := RecordedSteps.Clone()
     useDeferredCloneQueue := (CloneFailurePolicy = "deferEngineerRequireJuggernaut")
+    Wave40JuggernautPriorityRequested := false
+    Wave40JuggernautPriorityInjected := false
+    Wave40JuggernautLastProbeTick := 0
 
     i := 1
     while (i <= executionSteps.Length) {
+        PrioritizeWave40JuggernautClone(executionSteps, i, useDeferredCloneQueue)
         step := executionSteps[i]
         TouchMacroProgress("step " i "/" executionSteps.Length)
         isMacroStep := RegExMatch(step, "i)^(Click|Send|Sleep)\s*\(")
@@ -8056,15 +8091,12 @@ PlayStrategy() {
                 }
                 KronoxProfilerStepEnd(profileIndex, step, profileStart, cloneSucceeded ? "OK" : "DEFERRED")
             } else if RegExMatch(cloneTowerId, "i)^Juggernaut") {
-                Loop {
-                    if CloneTower(cloneTowerId, cloneX, cloneY, cloneWait, 0) {
-                        break
-                    }
-                    KronoxProfilerRetry(step, "Required Juggernaut clone retry")
-                    LogToConsole("Required Juggernaut clone did not complete; retrying in " Format("{:.2f}", CloneRetryDelayMs / 1000) " seconds...", true)
-                    Sleep(CloneRetryDelayMs)
+                cloneSucceeded := CloneTower(cloneTowerId, cloneX, cloneY, cloneWait, JuggernautCloneMaxAttempts)
+                if (!cloneSucceeded) {
+                    KronoxProfilerRetry(step, "Juggernaut step yielded after " JuggernautCloneMaxAttempts " genuine failures")
+                    LogToConsole("This Juggernaut clone step reached " JuggernautCloneMaxAttempts " genuine failures; continuing to the next task. Later Juggernaut steps remain eligible.", true)
                 }
-                KronoxProfilerStepEnd(profileIndex, step, profileStart)
+                KronoxProfilerStepEnd(profileIndex, step, profileStart, cloneSucceeded ? "OK" : "YIELDED")
             } else {
                 try {
                     ExecuteStep(step)
@@ -8135,6 +8167,61 @@ PlayStrategy() {
         LastOpenedTowerID := ""
         Sleep 2000
     }
+}
+
+RequestWave40JuggernautPriorityFromCooldown(towerId) {
+    global Wave40JuggernautPriorityRequested, Wave40JuggernautPriorityInjected
+
+    if (Wave40JuggernautPriorityInjected || !RegExMatch(towerId, "i)^Engineer"))
+        return false
+    if (Wave40JuggernautPriorityRequested)
+        return true
+
+    detectedWave := DetectCurrentWaveNumber()
+    if (detectedWave < 40)
+        return false
+
+    Wave40JuggernautPriorityRequested := true
+    TouchMacroProgress("wave 40 Juggernaut priority")
+    return true
+}
+
+PrioritizeWave40JuggernautClone(executionSteps, currentIndex, enabled) {
+    global Wave40JuggernautPriorityRequested, Wave40JuggernautPriorityInjected, Wave40JuggernautLastProbeTick
+
+    if (!enabled || Wave40JuggernautPriorityInjected)
+        return false
+
+    if (!Wave40JuggernautPriorityRequested) {
+        if (A_TickCount - Wave40JuggernautLastProbeTick < 1000)
+            return false
+        Wave40JuggernautLastProbeTick := A_TickCount
+        detectedWave := DetectCurrentWaveNumber()
+        if (detectedWave < 40)
+            return false
+        Wave40JuggernautPriorityRequested := true
+    }
+
+    Loop executionSteps.Length - currentIndex + 1 {
+        candidateIndex := currentIndex + A_Index - 1
+        candidate := executionSteps[candidateIndex]
+        if !RegExMatch(candidate, "i)^CloneTower\s*\(\s*Juggernaut")
+            continue
+
+        if (candidateIndex != currentIndex) {
+            priorityStep := executionSteps.RemoveAt(candidateIndex)
+            executionSteps.InsertAt(currentIndex, priorityStep)
+        }
+        Wave40JuggernautPriorityInjected := true
+        LogToConsole("Wave 40 detected: pausing normal order to run the next Juggernaut clone first. The remaining queue will resume afterward.", true)
+        TouchMacroProgress("wave 40 Juggernaut priority")
+        return true
+    }
+
+    ; No pending Juggernaut step exists, so do not repeatedly OCR or reorder.
+    Wave40JuggernautPriorityInjected := true
+    LogToConsole("Wave 40 priority check found no pending Juggernaut clone step; continuing the strategy queue.", true)
+    return false
 }
 
 ExecuteStep(step) {
@@ -8552,15 +8639,6 @@ CheckRestart() {
 
     shouldCollectRewards := (CollectPlaytimeRewards = "1" || CollectPlaytimeRewards = 1) && CheckDailyRewardTime() && (AutorunStartTime = 0 || (A_TickCount - AutorunStartTime) > 300000)
     
-    if (shouldCollectRewards && !MultiplayerEnabled) {
-        LogToConsole("Navigating to lobby to check playtime rewards...", true, false)
-        IsRestarting := false
-        CloseRoblox()
-        RunRoblox()
-        JoinGame()
-        return
-    }
-
     KillSubmacros()
 
     if WinExist("ahk_exe RobloxPlayerBeta.exe") {
@@ -8580,6 +8658,27 @@ CheckRestart() {
                 WinWaitActive("ahk_exe RobloxPlayerBeta.exe", , 1)
                 Click(resCancel.x, resCancel.y)
                 Sleep 250
+            }
+        }
+
+        ; Triumph takes precedence. The old order searched Restart first, which
+        ; could misclassify the end screen and restart a successful run instead
+        ; of selecting Play Again.
+        if (UsePlayAgainBtn = "1" || UsePlayAgainBtn = 1) {
+            resReplay := AdvImageSearch("Resources\PlayAgain.png", 0, h * 0.5, w, h*0.5, 0.5, 1.5, 0.025)
+            if (resReplay.status == "success" && resReplay.score > 0.64) {
+                if (MultiplayerEnabled && PlayerRole = "Host") {
+                    Sleep 5000
+                }
+                IsRestarting := false
+                LogToConsole("Triumph confirmed; choosing Play Again.")
+                if (!MultiplayerEnabled || PlayerRole = "Host") {
+                    Click(resReplay.x, resReplay.y)
+                }
+                Sleep(150)
+                WaitForLobbyLoad()
+                startWatchdog()
+                return
             }
         }
 
@@ -8622,23 +8721,17 @@ CheckRestart() {
             }
         }
 
-        if (UsePlayAgainBtn = "1" || UsePlayAgainBtn = 1) {
+    }
 
-            resReplay := AdvImageSearch("Resources\PlayAgain.png", 0, h * 0.5, w, h*0.5, 0.5, 1.5, 0.025)
-            
-            if (resReplay.status == "success" && resReplay.score > 0.64) {
-                if (MultiplayerEnabled && PlayerRole = "Host") {
-                    Sleep 5000
-                }
-                if (!MultiplayerEnabled || PlayerRole = "Host") {
-                    Click(resReplay.x, resReplay.y)
-                }
-                Sleep(150)
-                WaitForLobbyLoad()
-                startWatchdog()
-                return
-            }
-        }
+    ; Reward collection is a fallback only. It must never preempt a confirmed
+    ; triumph screen, because that would replace Play Again with a full relaunch.
+    if (shouldCollectRewards && !MultiplayerEnabled) {
+        LogToConsole("No end-screen action was available; navigating to the lobby to check playtime rewards...", true, false)
+        IsRestarting := false
+        CloseRoblox()
+        RunRoblox()
+        JoinGame()
+        return
     }
 
     startWatchdog()
