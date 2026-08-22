@@ -20,6 +20,9 @@ foreach ($marker in @(
     'EnsureKronoxDiscordBotRunning',
     'StopOrphanedKronoxDiscordGateways',
     'ProcessKronoxDiscordCommands',
+    'KronoxDiscordQueueWakeup',
+    'KronoxBotCommandConsumerBusy',
+    'Completed remote /',
     'KronoxBotSendScreenshot',
     'KronoxQueueRemoteStrategySwitch',
     'KronoxQueueRemoteSafeStop',
@@ -45,6 +48,22 @@ if ($gatewaySource.IndexOf("Invoke-DiscordBotApi -Method 'PUT'", [System.StringC
 }
 if ($gatewaySource.IndexOf('Discord rate limit on', [System.StringComparison]::Ordinal) -lt 0) {
     throw 'Discord gateway does not back off after HTTP 429 responses.'
+}
+if ($gatewaySource.IndexOf('Notify-KronoxCommandQueue', [System.StringComparison]::Ordinal) -lt 0 -or
+    $gatewaySource.IndexOf('PostMessage', [System.StringComparison]::Ordinal) -lt 0) {
+    throw 'Discord gateway does not actively wake the local command consumer.'
+}
+$botStart = $source.IndexOf('StartKronoxDiscordBot(*) {', [System.StringComparison]::Ordinal)
+$botStop = $source.IndexOf('StopOrphanedKronoxDiscordGateways() {', $botStart, [System.StringComparison]::Ordinal)
+if ($botStart -lt 0 -or $botStop -le $botStart) {
+    throw 'Could not isolate Discord bot startup lifecycle.'
+}
+$botStartSource = $source.Substring($botStart, $botStop - $botStart)
+if ($botStartSource.IndexOf('\*.cmd', [System.StringComparison]::Ordinal) -ge 0) {
+    throw 'Discord bot startup still deletes complete queued commands during a macro reload.'
+}
+if ($botStartSource.IndexOf('\*.tmp', [System.StringComparison]::Ordinal) -lt 0) {
+    throw 'Discord bot startup no longer cleans incomplete temporary queue files.'
 }
 foreach ($marker in @("title = 'Kronox Command Queue'", "name = 'Watching over Kronox Edition macro'", 'type = 3')) {
     if ($gatewaySource.IndexOf($marker, [System.StringComparison]::Ordinal) -lt 0) {

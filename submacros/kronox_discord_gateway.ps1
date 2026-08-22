@@ -16,6 +16,20 @@ $ErrorActionPreference = 'Stop'
 $ApiBase = 'https://discord.com/api/v10'
 $CommandSchema = 'kronox-slash-v3'
 $Cancellation = [System.Threading.CancellationToken]::None
+$QueueWakeMessage = 0x804B
+
+try {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class KronoxCommandQueueSignal {
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool PostMessage(IntPtr hWnd, UInt32 Msg, IntPtr wParam, IntPtr lParam);
+}
+'@
+} catch {
+    # Polling remains available if local Win32 message registration is blocked.
+}
 
 function Write-Log([string]$Message, [string]$Level = 'INFO') {
     try {
@@ -178,12 +192,27 @@ function ConvertTo-QueueField([string]$Value) {
     return ([string]$Value).Replace('|', '').Replace("`r", ' ').Replace("`n", ' ').Trim()
 }
 
+function Notify-KronoxCommandQueue {
+    try {
+        if ('KronoxCommandQueueSignal' -as [type]) {
+            # HWND_BROADCAST is safe here: only Main.ahk handles this private
+            # WM_APP message, and it still validates the authenticated queue file.
+            [void][KronoxCommandQueueSignal]::PostMessage([IntPtr]0xffff, [uint32]$QueueWakeMessage, [IntPtr]::Zero, [IntPtr]::Zero)
+        }
+    } catch {
+        Write-Log "Could not wake the macro queue consumer; the polling fallback remains active: $($_.Exception.Message)" 'WARN'
+    }
+}
+
 function Queue-KronoxCommand($Interaction, [string]$Action, [string]$Argument = '', [string]$Argument2 = '') {
     $id = [string]$Interaction.id
     if ([string]::IsNullOrWhiteSpace($id)) { throw 'Discord interaction had no id.' }
     $temporary = Join-Path $CommandQueuePath (".$id.tmp")
     $target = Join-Path $CommandQueuePath ("$id.cmd")
-    if (Test-Path -LiteralPath $target) { return }
+    if (Test-Path -LiteralPath $target) {
+        Notify-KronoxCommandQueue
+        return
+    }
     $record = "$id|$(ConvertTo-QueueField $Action)|$(ConvertTo-QueueField $Argument)|$(ConvertTo-QueueField $Argument2)"
     [System.IO.File]::WriteAllText($temporary, $record, [System.Text.UTF8Encoding]::new($false))
     try {
@@ -193,6 +222,7 @@ function Queue-KronoxCommand($Interaction, [string]$Action, [string]$Argument = 
     } finally {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
     }
+    Notify-KronoxCommandQueue
 }
 
 function Send-GatewayPayload($Socket, $Payload) {

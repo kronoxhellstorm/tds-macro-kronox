@@ -27,12 +27,18 @@ if !InStr(mainSource, "PrioritizeWave40JuggernautClone(executionSteps, i, useDef
     throw Error("Wave 40 does not preempt the normal queue for a pending Juggernaut clone.")
 if !InStr(mainSource, "Triumph confirmed; choosing Play Again.")
     throw Error("The end-screen flow does not explicitly prioritize Play Again after a triumph.")
+if !InStr(mainSource, "ShouldReconnectVipAfterTriumph()")
+    throw Error("VIP server runs do not expose a post-triumph reconnect decision.")
 checkRestartPos := InStr(mainSource, "CheckRestart() {")
 playAgainPos := InStr(mainSource, 'resReplay := AdvImageSearch("Resources\PlayAgain.png"', true, checkRestartPos)
+vipReconnectPos := InStr(mainSource, "if ShouldReconnectVipAfterTriumph()", true, playAgainPos)
+playAgainClickPos := InStr(mainSource, "Click(resReplay.x, resReplay.y)", true, playAgainPos)
 restartPos := InStr(mainSource, 'resRestart := AdvImageSearch("Resources\Restart.png"', true, checkRestartPos)
 rewardFallbackPos := InStr(mainSource, "Reward collection is a fallback only", true, checkRestartPos)
 if (!playAgainPos || !restartPos || !rewardFallbackPos || playAgainPos >= restartPos || restartPos >= rewardFallbackPos)
     throw Error("Play Again must be checked before loss Restart, with reward collection remaining a final fallback.")
+if (!vipReconnectPos || !playAgainClickPos || vipReconnectPos >= playAgainClickPos)
+    throw Error("VIP server reconnect must bypass the normal Play Again click after a confirmed triumph.")
 
 steps := []
 inSteps := false

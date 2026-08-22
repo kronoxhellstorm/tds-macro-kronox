@@ -43,7 +43,7 @@ if (A_PtrSize == 4) {
 #Include "%A_ScriptDir%\lib\KronoxFeatures.ahk"
 #Include "%A_ScriptDir%\submacros\updater.ahk"
 
-ver := "1.3.3-kronox.12"
+ver := "1.3.3-kronox.13"
 ; Kronox's Edition checks only its own releases and never falls back to upstream builds.
 global ForkUpdateRepository := "kronoxhellstorm/tds-macro-kronox"
 
@@ -254,6 +254,8 @@ global RuntimeLogDir := A_AppData "\Ultimate_Macro\Logs"
 global KronoxBotRuntimeLogFile := RuntimeLogDir "\discord-bot.log"
 global KronoxBotGatewayScript := A_ScriptDir "\submacros\kronox_discord_gateway.ps1"
 global KronoxBotGatewayPID := 0
+global KronoxBotWakeMessage := 0x804B
+global KronoxBotCommandConsumerBusy := false
 global DiscordRemoteView := "Webhook"
 
 global StratsDir := A_WorkingDir "\Resources\Strats"
@@ -2323,6 +2325,7 @@ if KronoxBotEnabled
 OnMessage(0x0201, WM_LBUTTONDOWN_Drag)
 OnMessage(0x0200, EditorHotbarDragMouseMove)
 OnMessage(0x0202, EditorHotbarDragMouseUp)
+OnMessage(KronoxBotWakeMessage, KronoxDiscordQueueWakeup)
 
 RemoveInitialFocus() {
     if !WinActive("ahk_id " MainGui.Hwnd)
@@ -6215,8 +6218,9 @@ BrawlerReposition(towerId, x, y) {
             } else {
                 attempts++
                 if (attempts > 30) {
-                    LogToConsole("Tower " towerID " menu not found after 30 attempts, reloading...", true)
-                    SafeReload()
+                    SendGameplayKey(CancelPlacementKey, "Cancel placement")
+                    LogToConsole("Tower " towerID " menu was not found after 30 attempts; skipping this reposition without leaving the active match.", true)
+                    return false
                 }
                 variation := Random(-4, 4)
                 Click(Towers[towerId].x, Towers[towerId].y + ScaleY(variation))
@@ -6670,8 +6674,10 @@ StartKronoxDiscordBot(*) {
 
     StopOrphanedKronoxDiscordGateways()
 
-    ; Never execute a command left in the queue by a crashed/reloaded macro.
-    Loop Files, KronoxBotCommandQueueDir "\*.cmd", "F"
+    ; Preserve complete commands across a short watchdog reload. The durable
+    ; interaction id prevents replay, while incomplete temporary writes are safe
+    ; to remove before the gateway starts again.
+    Loop Files, KronoxBotCommandQueueDir "\*.tmp", "F"
         try FileDelete(A_LoopFileFullPath)
 
     command := 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' KronoxBotGatewayScript '" -SettingsPath "' KronoxBotSettingsFile '" -CommandQueuePath "' KronoxBotCommandQueueDir '" -LogPath "' KronoxBotRuntimeLogFile '"'
@@ -6734,37 +6740,66 @@ EnsureKronoxDiscordBotRunning(*) {
 ; The PowerShell gateway only acknowledges Discord interactions.  Commands are
 ; queued locally so every actual macro action stays in this process and follows
 ; the same input-safety / lifecycle rules as a GUI action.
+KronoxDiscordQueueWakeup(*) {
+    ; Periodic polling remains as a fallback, but the gateway also broadcasts
+    ; this private local message after an atomic queue write. Processing it here
+    ; prevents a busy strategy thread from starving remote commands indefinitely.
+    try ProcessKronoxDiscordCommands()
+    catch Error as err
+        WriteRuntimeLog("DISCORD", "Queue wake-up failed: " err.Message, "ERROR")
+    return 0
+}
+
 ProcessKronoxDiscordCommands(*) {
-    global KronoxBotEnabled, KronoxBotCommandQueueDir, KronoxBotSettingsFile
+    global KronoxBotEnabled, KronoxBotCommandQueueDir, KronoxBotSettingsFile, KronoxBotCommandConsumerBusy
 
-    if !KronoxBotEnabled
+    if (!KronoxBotEnabled || KronoxBotCommandConsumerBusy)
         return
+    KronoxBotCommandConsumerBusy := true
+    try {
+        Loop Files, KronoxBotCommandQueueDir "\*.cmd", "F" {
+            commandFile := A_LoopFileFullPath
+            try payload := Trim(FileRead(commandFile, "UTF-8"), " `t`r`n")
+            catch Error as err {
+                WriteRuntimeLog("DISCORD", "Could not read queued remote command; it will be retried: " err.Message, "WARN")
+                continue
+            }
 
-    Loop Files, KronoxBotCommandQueueDir "\*.cmd", "F" {
-        commandFile := A_LoopFileFullPath
-        try payload := Trim(FileRead(commandFile, "UTF-8"), " `t`r`n")
-        catch Error
-            continue
+            if (payload = "") {
+                try FileDelete(commandFile)
+                continue
+            }
 
-        ; Deleting immediately prevents a sidecar reconnect from replaying a
-        ; command. The interaction id below supplies a second durable guard.
-        try FileDelete(commandFile)
-        if (payload = "")
-            continue
+            parts := StrSplit(payload, "|")
+            if (parts.Length < 2) {
+                WriteRuntimeLog("DISCORD", "Discarded a malformed remote command file.", "WARN")
+                try FileDelete(commandFile)
+                continue
+            }
+            interactionId := Trim(parts[1])
+            action := StrLower(Trim(parts[2]))
+            argument := (parts.Length >= 3) ? Trim(parts[3]) : ""
+            argument2 := (parts.Length >= 4) ? Trim(parts[4]) : ""
+            previousId := IniRead(KronoxBotSettingsFile, "Runtime", "LastInteraction", "")
+            if (interactionId = "" || interactionId = previousId) {
+                try FileDelete(commandFile)
+                continue
+            }
 
-        parts := StrSplit(payload, "|")
-        if (parts.Length < 2)
-            continue
-        interactionId := Trim(parts[1])
-        action := StrLower(Trim(parts[2]))
-        argument := (parts.Length >= 3) ? Trim(parts[3]) : ""
-        argument2 := (parts.Length >= 4) ? Trim(parts[4]) : ""
-        previousId := IniRead(KronoxBotSettingsFile, "Runtime", "LastInteraction", "")
-        if (interactionId = "" || interactionId = previousId)
-            continue
-
-        IniWrite(interactionId, KronoxBotSettingsFile, "Runtime", "LastInteraction")
-        KronoxDispatchDiscordCommand(action, argument, argument2)
+            try {
+                WriteRuntimeLog("DISCORD", "Executing remote /" action ".")
+                KronoxDispatchDiscordCommand(action, argument, argument2)
+                IniWrite(interactionId, KronoxBotSettingsFile, "Runtime", "LastInteraction")
+                try FileDelete(commandFile)
+                WriteRuntimeLog("DISCORD", "Completed remote /" action ".")
+            } catch Error as err {
+                ; Do not acknowledge or delete a command that never completed.
+                ; The 500 ms poller or a later gateway wake-up will retry it.
+                WriteRuntimeLog("DISCORD", "Remote /" action " failed and remains queued: " err.Message, "ERROR")
+            }
+        }
+    } finally {
+        KronoxBotCommandConsumerBusy := false
     }
 }
 
@@ -7690,7 +7725,7 @@ HelpRestartBtn(*) {
     ModernMsgBox("Info", "If this setting is ON, the macro will use the restart button when you lose.`n`nIt's recommended to turn it OFF if you are using a win strategy and your macro sometimes appears on the wrong map.", "OK")
 }
 HelpPlayAgainBtn(*) {
-    ModernMsgBox("Info", "If this setting is ON, the macro will use the play again button when you win.", "OK")
+    ModernMsgBox("Info", "If this setting is ON, the macro will use the Play Again button when you win.`n`nVIP server mode overrides this behavior: after a triumph, the macro leaves and reopens the configured VIP link so non-premium accounts can vote for the next map.", "OK")
 }
 HelpAutoCameraCorrection(*) {
     ModernMsgBox("Info", "The macro will use tds keybind when upgrading the tower.`n`nIt's recommended to turn it ON.", "OK")
@@ -8634,6 +8669,11 @@ EquipTowers(towers, allowAbstractQueue := false) {
     LogToConsole("Successfully equipped towers: " towers, true, false)
 }
 
+ShouldReconnectVipAfterTriumph() {
+    global UseVipServer, VipLink
+    return (UseVipServer = "1" || UseVipServer = 1) && Trim(VipLink) != ""
+}
+
 CheckRestart() {
     global IsRestarting, difficulty, UseRestartBtn, UsePlayAgainBtn, CollectPlaytimeRewards
 
@@ -8667,6 +8707,14 @@ CheckRestart() {
         if (UsePlayAgainBtn = "1" || UsePlayAgainBtn = 1) {
             resReplay := AdvImageSearch("Resources\PlayAgain.png", 0, h * 0.5, w, h*0.5, 0.5, 1.5, 0.025)
             if (resReplay.status == "success" && resReplay.score > 0.64) {
+                if ShouldReconnectVipAfterTriumph() {
+                    IsRestarting := false
+                    LogToConsole("Triumph confirmed; VIP server mode is enabled, so Play Again is bypassed and the configured VIP server will be reopened.")
+                    CloseRoblox()
+                    RunRoblox()
+                    JoinGame()
+                    return
+                }
                 if (MultiplayerEnabled && PlayerRole = "Host") {
                     Sleep 5000
                 }
